@@ -1,0 +1,40 @@
+{
+    "name":  "mailpulse",
+    "version":  "0.1.0",
+    "private":  true,
+    "scripts":  {
+                    "dev":  "next dev",
+                    "build":  "prisma generate \u0026\u0026 next build",
+                    "start":  "next start",
+                    "worker":  "tsx src/worker.ts",
+                    "typecheck":  "tsc --noEmit",
+                    "test":  "vitest run",
+                    "db:generate":  "prisma generate",
+                    "db:migrate":  "prisma migrate deploy",
+                    "bootstrap:production":  "tsx --env-file=.env.local scripts/bootstrap-production.ts",
+                    "check:readiness":  "tsx --env-file=.env.local scripts/check-readiness.ts"
+                },
+    "dependencies":  {
+                         "@prisma/client":  "6.12.0",
+                         "@supabase/ssr":  "0.12.7",
+                         "@supabase/supabase-js":  "2.117.3",
+                         "@upstash/qstash":  "2.12.0",
+                         "html-to-text":  "^9.0.5",
+                         "next":  "16.4.0",
+                         "pino":  "^9.9.4",
+                         "postcss":  "8.5.30",
+                         "react":  "19.3.0",
+                         "react-dom":  "19.3.0",
+                         "zod":  "^4.1.12"
+                     },
+    "devDependencies":  {
+                            "@types/html-to-text":  "^9.0.4",
+                            "@types/node":  "^24.7.2",
+                            "@types/react":  "19.1.16",
+                            "@types/react-dom":  "19.1.9",
+                            "prisma":  "6.12.0",
+                            "tsx":  "^4.20.6",
+                            "typescript":  "^5.9.3",
+                            "vitest":  "5.0.4"
+                        }
+}

@@ -1,0 +1,233 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum EmailProviderKind {
+  MICROSOFT
+}
+
+enum ConnectionStatus {
+  CONNECTED
+  REAUTH_REQUIRED
+  ERROR
+  DISCONNECTED
+}
+
+enum DraftStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  CANCELLED
+  SENDING
+  SENT
+  FAILED
+  UNKNOWN_SEND_STATUS
+}
+
+enum ReplyType {
+  REPLY
+  REPLY_ALL
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
+model ApplicationUser {
+  id           String                @id @default(cuid())
+  email        String?               @unique
+  displayName  String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  accounts     EmailAccount[]
+  destinations TelegramDestination[]
+  settings     ApplicationSettings?
+}
+
+model EmailAccount {
+  id                    String            @id @default(cuid())
+  userId                String
+  provider              EmailProviderKind
+  emailAddress          String
+  providerAccountId     String
+  encryptedTokens       String
+  enabled               Boolean           @default(true)
+  notificationsOn       Boolean           @default(true)
+  connectionStatus      ConnectionStatus  @default(CONNECTED)
+  syncCursor            String?
+  lastSyncedAt          DateTime?
+  webhookSubscriptionId String?           @unique
+  webhookExpiresAt      DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  user                  ApplicationUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages              EmailMessage[]
+  drafts                EmailDraft[]
+  syncCheckpoint        SyncCheckpoint?
+
+  @@unique([provider, providerAccountId])
+  @@unique([userId, emailAddress])
+  @@index([userId, enabled])
+  @@index([enabled, notificationsOn])
+}
+
+model EmailMessage {
+  id                String                 @id @default(cuid())
+  accountId         String
+  providerMessageId String
+  conversationId    String?
+  internetMessageId String?
+  senderName        String?
+  senderAddress     String
+  replyTo           Json?
+  recipients        Json
+  subject           String
+  sanitizedPreview  String?
+  receivedAt        DateTime
+  providerWebLink   String?
+  hasAttachments    Boolean                @default(false)
+  createdAt         DateTime               @default(now())
+  account           EmailAccount           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  attachments       EmailAttachment[]
+  drafts            EmailDraft[]
+  deliveries        NotificationDelivery[]
+
+  @@unique([accountId, providerMessageId])
+  @@index([accountId, receivedAt(sort: Desc)])
+}
+
+model EmailAttachment {
+  id                   String        @id @default(cuid())
+  messageId            String?
+  draftId              String?
+  providerAttachmentId String?
+  telegramFileId       String?
+  filename             String
+  mimeType             String
+  sizeBytes            BigInt
+  temporaryStorageKey  String?
+  createdAt            DateTime      @default(now())
+  message              EmailMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  draft                EmailDraft?   @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([draftId])
+}
+
+model EmailDraft {
+  id                String            @id @default(cuid())
+  accountId         String
+  originalMessageId String
+  providerDraftId   String
+  replyType         ReplyType
+  recipients        Json
+  subject           String
+  body              String
+  status            DraftStatus       @default(DRAFT)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  account           EmailAccount      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  originalMessage   EmailMessage      @relation(fields: [originalMessageId], references: [id], onDelete: Restrict)
+  attachments       EmailAttachment[]
+  outgoing          OutgoingMessage?
+
+  @@index([accountId, status])
+  @@index([originalMessageId])
+}
+
+model OutgoingMessage {
+  id                   String      @id @default(cuid())
+  draftId              String      @unique
+  status               DraftStatus @default(DRAFT)
+  confirmedAt          DateTime?
+  scheduledSendAt      DateTime?
+  cancellationDeadline DateTime?
+  claimedAt            DateTime?
+  sentAt               DateTime?
+  cancelledAt          DateTime?
+  providerResponse     Json?
+  errorDetails         String?
+  attempts             Int         @default(0)
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  draft                EmailDraft  @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledSendAt])
+}
+
+model TelegramDestination {
+  id             String                      @id @default(cuid())
+  userId         String
+  telegramUserId BigInt                      @unique
+  chatId         BigInt                      @unique
+  pairedAt       DateTime?
+  enabled        Boolean                     @default(true)
+  user           ApplicationUser             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  states         TelegramConversationState[]
+  deliveries     NotificationDelivery[]
+
+  @@index([userId])
+}
+
+model TelegramConversationState {
+  id            String              @id @default(cuid())
+  destinationId String
+  activeDraftId String?
+  expectedInput String?
+  state         String
+  updatedAt     DateTime            @updatedAt
+  destination   TelegramDestination @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+
+  @@unique([destinationId, activeDraftId])
+}
+
+model TelegramProcessedUpdate {
+  updateId  BigInt   @id
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model NotificationDelivery {
+  id                String              @id @default(cuid())
+  messageId         String
+  destinationId     String
+  status            DeliveryStatus      @default(PENDING)
+  attempts          Int                 @default(0)
+  telegramMessageId BigInt?
+  lastError         String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  message           EmailMessage        @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  destination       TelegramDestination @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, destinationId])
+  @@index([destinationId])
+}
+
+model SyncCheckpoint {
+  id             String       @id @default(cuid())
+  accountId      String       @unique
+  providerCursor String?
+  lastSyncedAt   DateTime?
+  errorState     String?
+  account        EmailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+model ApplicationSettings {
+  id                        String          @id @default(cuid())
+  userId                    String          @unique
+  timezone                  String          @default("America/Buenos_Aires")
+  undoSendSeconds           Int             @default(10)
+  notificationPreviewLength Int             @default(2500)
+  user                      ApplicationUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
