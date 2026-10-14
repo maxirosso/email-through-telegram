@@ -119,8 +119,8 @@ model EmailAttachment {
   message              EmailMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
   draft                EmailDraft?   @relation(fields: [draftId], references: [id], onDelete: Cascade)
 
+  @@unique([draftId, telegramFileId])
   @@index([messageId])
-  @@index([draftId])
 }
 
 model EmailDraft {

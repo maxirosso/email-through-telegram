@@ -41,7 +41,7 @@ export function answerCallbackQuery(callbackQueryId: string, text: string, showA
   });
 }
 
-export async function getTelegramFile(fileId: string): Promise<Uint8Array> {
+export async function getTelegramFile(fileId: string): Promise<{ bytes: Uint8Array; filePath: string }> {
   const file = await telegram<{ file_path?: string }>("getFile", { file_id: fileId });
   if (!file.file_path) throw new Error("Telegram did not return a file path");
   const response = await fetch(
@@ -49,7 +49,7 @@ export async function getTelegramFile(fileId: string): Promise<Uint8Array> {
     { signal: AbortSignal.timeout(30_000) },
   );
   if (!response.ok) throw new Error(`Telegram file download failed (${response.status})`);
-  return new Uint8Array(await response.arrayBuffer());
+  return { bytes: new Uint8Array(await response.arrayBuffer()), filePath: file.file_path };
 }
 
 export async function sendTelegramDocument(

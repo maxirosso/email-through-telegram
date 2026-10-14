@@ -192,7 +192,12 @@ export class MicrosoftGraphProvider implements EmailProvider {
   }
 
   async removeDraftAttachment(draftId: string, attachmentId: string): Promise<void> {
-    await this.request(`/me/messages/${encodeURIComponent(draftId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
+    try {
+      await this.request(`/me/messages/${encodeURIComponent(draftId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
+    } catch (error) {
+      if (error instanceof ProviderRequestError && error.status === 404) return;
+      throw error;
+    }
   }
   async sendDraft(draftId: string): Promise<void> {
     await this.request(`/me/messages/${encodeURIComponent(draftId)}/send`, { method: "POST" });

@@ -3,19 +3,25 @@ import { z } from "zod";
 import { accessTokenForAccount } from "@/auth/microsoft-tokens";
 import { config } from "@/config";
 import { db } from "@/lib/db";
+import { logger } from "@/lib/logger";
 import { MicrosoftGraphProvider } from "@/providers/microsoft-graph";
 import { OutgoingService } from "@/services/outgoing";
 import { scheduleServerlessSend } from "@/services/qstash-scheduler";
 import {
   answerCallbackQuery, getTelegramFile, sendTelegramDocument, sendTelegramMessage,
 } from "@/telegram/client";
-import { draftPreview, escapeHtml, scheduledMessage } from "@/telegram/format";
+import { normalizeTelegramAttachment, TelegramAttachmentKind } from "@/telegram/attachments";
+import { draftPreview, escapeHtml, scheduledMessage, truncate } from "@/telegram/format";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const fileSchema = z.object({ file_id: z.string(), file_name: z.string().optional(), mime_type: z.string().optional(), file_size: z.number().int().optional() });
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_DRAFT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_DRAFT_ATTACHMENTS = 10;
+
+const fileSchema = z.object({ file_id: z.string(), file_unique_id: z.string().optional(), file_name: z.string().optional(), mime_type: z.string().optional(), file_size: z.number().int().optional() });
 const updateSchema = z.object({
   update_id: z.number().int(),
   message: z.object({
@@ -25,6 +31,8 @@ const updateSchema = z.object({
     document: fileSchema.optional(),
     photo: z.array(fileSchema).optional(),
     caption: z.string().optional(),
+    date: z.number().int().optional(),
+    media_group_id: z.string().optional(),
   }).optional(),
   callback_query: z.object({
     id: z.string(), from: z.object({ id: z.number().int() }), data: z.string().max(64).optional(),
@@ -52,13 +60,22 @@ async function showDraft(destination: Destination, draftId: string) {
     where: { id: draftId, account: { userId: destination.userId } }, include: { attachments: true },
   });
   const recipients = draft.recipients as Array<{ address: string }>;
+  const attachmentButtons = draft.attachments.slice(0, 8).map((attachment) => [{
+    text: `🗑 Remove ${truncate(attachment.filename, 28)}`,
+    callback_data: `remove:${attachment.id}`,
+  }]);
   await sendTelegramMessage(destination.chatId, draftPreview({
     to: recipients.map((item) => item.address), subject: draft.subject,
     body: draft.body, attachmentCount: draft.attachments.length,
-  }), [[
-    { text: "📎 Add attachment", callback_data: `attach:${draft.id}` },
-    { text: "✅ Send", callback_data: `send:${draft.id}` },
-  ], [{ text: "🗑 Cancel", callback_data: `cancel:${draft.id}` }]]);
+    attachmentNames: draft.attachments.map((attachment) => attachment.filename),
+  }), [
+    [
+      { text: "📎 Add photos/files", callback_data: `attach:${draft.id}` },
+      { text: "✅ Send", callback_data: `send:${draft.id}` },
+    ],
+    ...attachmentButtons,
+    [{ text: "🗑 Cancel draft", callback_data: `cancel:${draft.id}` }],
+  ]);
 }
 
 async function beginReply(destination: Destination, messageId: string, replyAll: boolean) {
@@ -111,39 +128,84 @@ async function handleText(destination: Destination, text: string) {
   await showDraft(destination, draft.id);
 }
 
-async function handleAttachment(destination: Destination, input: z.infer<typeof fileSchema>) {
+async function handleAttachment(
+  destination: Destination,
+  input: z.infer<typeof fileSchema>,
+  kind: TelegramAttachmentKind,
+  receivedAt: Date,
+) {
   const state = await db.telegramConversationState.findFirst({
     where: { destinationId: destination.id, state: "AWAITING_ATTACHMENT", activeDraftId: { not: null } },
     orderBy: { updatedAt: "desc" },
   });
   if (!state?.activeDraftId) {
-    await sendTelegramMessage(destination.chatId, "Tap Add attachment on a reply preview first.");
+    await sendTelegramMessage(destination.chatId, "Tap Add photos/files on a reply preview first.");
     return;
   }
-  if ((input.file_size ?? 0) > 20 * 1024 * 1024) {
+  if ((input.file_size ?? 0) > MAX_ATTACHMENT_BYTES) {
     await sendTelegramMessage(destination.chatId, "That file is over Telegram's 20 MB bot download limit.");
     return;
   }
   const draft = await db.emailDraft.findFirstOrThrow({
     where: { id: state.activeDraftId, account: { userId: destination.userId } },
+    include: { attachments: true },
   });
-  const bytes = await getTelegramFile(input.file_id);
-  if (bytes.byteLength > 20 * 1024 * 1024) throw new Error("Telegram file exceeded 20 MB after download");
-  const filename = (input.file_name || "attachment").replace(/[\\/:*?"<>|\u0000-\u001F]/g, "_").slice(0, 180);
-  const mimeType = input.mime_type || "application/octet-stream";
-  const remote = await (await providerFor(draft.accountId)).addDraftAttachment(
-    draft.providerDraftId, { filename, mimeType, bytes },
+  if (!["DRAFT", "READY"].includes(draft.status)) {
+    await sendTelegramMessage(destination.chatId, "This draft is no longer editable.");
+    return;
+  }
+  if (draft.attachments.length >= MAX_DRAFT_ATTACHMENTS) {
+    await sendTelegramMessage(destination.chatId, `A reply can contain at most ${MAX_DRAFT_ATTACHMENTS} attachments.`);
+    return;
+  }
+  const existing = await db.emailAttachment.findFirst({
+    where: { draftId: draft.id, telegramFileId: input.file_id },
+  });
+  if (existing) {
+    await sendTelegramMessage(destination.chatId, `✅ ${escapeHtml(existing.filename)} is already attached.`);
+    return;
+  }
+
+  const download = await getTelegramFile(input.file_id);
+  if (download.bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+    await sendTelegramMessage(destination.chatId, "That file exceeded Telegram's 20 MB bot download limit.");
+    return;
+  }
+  const existingBytes = draft.attachments.reduce((total, attachment) => total + attachment.sizeBytes, 0n);
+  if (existingBytes + BigInt(download.bytes.byteLength) > BigInt(MAX_DRAFT_ATTACHMENT_BYTES)) {
+    await sendTelegramMessage(destination.chatId, "The reply would exceed the safe 25 MB total attachment limit.");
+    return;
+  }
+  const { filename, mimeType } = normalizeTelegramAttachment(input, kind, download, receivedAt);
+  const provider = await providerFor(draft.accountId);
+  const remote = await provider.addDraftAttachment(
+    draft.providerDraftId, { filename, mimeType, bytes: download.bytes },
   );
-  await db.$transaction([
-    db.emailAttachment.create({
+  try {
+    await db.emailAttachment.create({
       data: {
         draftId: draft.id, providerAttachmentId: remote.id, telegramFileId: input.file_id,
-        filename, mimeType, sizeBytes: BigInt(bytes.byteLength),
+        filename, mimeType, sizeBytes: BigInt(download.bytes.byteLength),
       },
-    }),
-    db.telegramConversationState.update({ where: { id: state.id }, data: { state: "READY", expectedInput: null } }),
-  ]);
-  await showDraft(destination, draft.id);
+    });
+  } catch (error) {
+    await provider.removeDraftAttachment(draft.providerDraftId, remote.id).catch(() => undefined);
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      await sendTelegramMessage(destination.chatId, `✅ ${escapeHtml(filename)} is already attached.`);
+      return;
+    }
+    throw error;
+  }
+
+  const attachmentCount = await db.emailAttachment.count({ where: { draftId: draft.id } });
+  await sendTelegramMessage(
+    destination.chatId,
+    `✅ <b>Attached:</b> ${escapeHtml(filename)}\n${attachmentCount} file${attachmentCount === 1 ? "" : "s"} attached. Send more, or tap Done.`,
+    [[
+      { text: "✅ Done adding", callback_data: `doneattach:${draft.id}` },
+      { text: "✉️ Send now", callback_data: `send:${draft.id}` },
+    ]],
+  );
 }
 
 async function handleCommand(destination: Destination, command: string) {
@@ -223,18 +285,56 @@ async function handleCallback(destination: Destination, id: string, data: string
     await answerCallbackQuery(id, "Attachments delivered.");
     return;
   }
+  if (action === "remove") {
+    const attachment = await db.emailAttachment.findFirst({
+      where: { id: objectId, draft: { account: { userId: destination.userId } } },
+      include: { draft: true },
+    });
+    if (!attachment?.draft) { await answerCallbackQuery(id, "Attachment not found.", true); return; }
+    if (!["DRAFT", "READY"].includes(attachment.draft.status)) {
+      await answerCallbackQuery(id, "This draft is no longer editable.", true);
+      return;
+    }
+    if (attachment.providerAttachmentId) {
+      await (await providerFor(attachment.draft.accountId)).removeDraftAttachment(
+        attachment.draft.providerDraftId,
+        attachment.providerAttachmentId,
+      );
+    }
+    await db.emailAttachment.delete({ where: { id: attachment.id } });
+    await answerCallbackQuery(id, "Attachment removed.");
+    await showDraft(destination, attachment.draft.id);
+    return;
+  }
   const draft = action === "undo" ? null : await db.emailDraft.findFirst({
     where: { id: objectId, account: { userId: destination.userId } }, include: { attachments: true },
   });
   if (action !== "undo" && !draft) { await answerCallbackQuery(id, "Draft not found.", true); return; }
 
   if (action === "attach" && draft) {
+    if (!["DRAFT", "READY"].includes(draft.status)) {
+      await answerCallbackQuery(id, "This draft is no longer editable.", true);
+      return;
+    }
     await db.telegramConversationState.updateMany({
       where: { destinationId: destination.id, activeDraftId: draft.id },
-      data: { state: "AWAITING_ATTACHMENT", expectedInput: "DOCUMENT" },
+      data: { state: "AWAITING_ATTACHMENT", expectedInput: "ATTACHMENT" },
     });
-    await sendTelegramMessage(destination.chatId, "📎 Send one document or photo (maximum 20 MB).", undefined, true);
-    await answerCallbackQuery(id, "Waiting for attachment.");
+    await sendTelegramMessage(
+      destination.chatId,
+      "📎 <b>Attachment mode</b>\n\nSend one or several photos/files (20 MB maximum each), then tap Done.",
+      [[{ text: "✅ Done", callback_data: `doneattach:${draft.id}` }]],
+    );
+    await answerCallbackQuery(id, "Ready for photos and files.");
+    return;
+  }
+  if (action === "doneattach" && draft) {
+    await db.telegramConversationState.updateMany({
+      where: { destinationId: destination.id, activeDraftId: draft.id },
+      data: { state: "READY", expectedInput: null },
+    });
+    await answerCallbackQuery(id, "Attachments saved.");
+    await showDraft(destination, draft.id);
     return;
   }
   if (action === "send" && draft) {
@@ -243,6 +343,9 @@ async function handleCallback(destination: Destination, id: string, data: string
       return;
     }
     const result = await scheduleServerlessSend(draft.id);
+    await db.telegramConversationState.deleteMany({
+      where: { destinationId: destination.id, activeDraftId: draft.id },
+    });
     const recipients = draft.recipients as Array<{ address: string }>;
     await sendTelegramMessage(destination.chatId, scheduledMessage({
       to: recipients.map((x) => x.address), subject: draft.subject,
@@ -303,12 +406,16 @@ export async function POST(request: Request) {
       const destination = await authorizedDestination(message.from!.id, message.chat.id);
       if (destination) {
         const photo = message.photo?.at(-1);
-        if (message.document || photo) await handleAttachment(destination, message.document ?? photo!);
-        else if (message.text) await handleText(destination, message.text);
+        const attachment = message.document ?? photo;
+        if (attachment) {
+          const receivedAt = new Date((message.date ?? Math.floor(Date.now() / 1000)) * 1000);
+          await handleAttachment(destination, attachment, message.document ? "document" : "photo", receivedAt);
+        } else if (message.text) await handleText(destination, message.text);
       }
     }
     return new Response(null, { status: 204 });
   } catch (error) {
+    logger.error({ err: error, updateId: updateId.toString() }, "Telegram update failed");
     await db.telegramProcessedUpdate.delete({ where: { updateId } }).catch(() => undefined);
     throw error;
   }

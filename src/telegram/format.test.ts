@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scheduledMessage } from "./format";
+import { draftPreview, scheduledMessage } from "./format";
 
 describe("scheduledMessage", () => {
   it("shows the 10 second default and escapes user content", () => {
@@ -9,5 +9,13 @@ describe("scheduledMessage", () => {
     });
     expect(message).toContain("sent in 10 seconds");
     expect(message).toContain("A &lt; B &amp; C");
+  });
+  it("lists safe attachment filenames in reply previews", () => {
+    const message = draftPreview({
+      to: ["client@example.com"], subject: "Photos", body: "Attached",
+      attachmentCount: 2, attachmentNames: ["IMG_001.jpg", "quote <final>.pdf"],
+    });
+    expect(message).toContain("IMG_001.jpg");
+    expect(message).toContain("quote &lt;final&gt;.pdf");
   });
 });

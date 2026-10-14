@@ -35,15 +35,22 @@ export function draftPreview(input: {
   subject: string;
   body: string;
   attachmentCount: number;
+  attachmentNames?: string[];
 }): string {
+  const attachmentLines = (input.attachmentNames ?? []).slice(0, 8)
+    .map((name) => `  • ${escapeHtml(truncate(name, 60))}`);
+  if ((input.attachmentNames?.length ?? 0) > 8) {
+    attachmentLines.push(`  • …and ${input.attachmentNames!.length - 8} more`);
+  }
   return [
     "📝 <b>REPLY PREVIEW</b>",
     "",
     `👤 To: ${escapeHtml(input.to.join(", "))}`,
     `📌 Subject: ${escapeHtml(input.subject)}`,
     `📎 Attachments: ${input.attachmentCount}`,
+    ...attachmentLines,
     "",
-    escapeHtml(truncate(input.body, 2800)),
+    escapeHtml(truncate(input.body, Math.max(800, 2800 - attachmentLines.join("\n").length))),
   ].join("\n");
 }
 
