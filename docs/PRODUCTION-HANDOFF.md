@@ -61,7 +61,7 @@ Supabase Auth still needs project-level configuration and the first owner invite
 
 ### Last verified release
 
-Vercel deployment `dpl_AW34fqdgcY6SFD5Wtj7adkJAfh4j` is live at the production URL. The release passed 21 tests, TypeScript checking, the Next.js 16.4 production build, readiness checks, HTTP 200 live/ready/login/dashboard checks, and HTTP 401 rejection checks for unsigned Telegram, send-job, and dashboard-export requests.
+Tenant-foundation release commit `18626ff` is live at the production URL through Vercel. The release passed 21 tests, TypeScript checking, the Next.js 16.4 production build, readiness checks, HTTP 200 live/ready/login/dashboard checks, and HTTP 401 rejection checks for unsigned Telegram, send-job, and dashboard-export requests.
 
 ## Architecture
 
