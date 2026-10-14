@@ -2,6 +2,9 @@ import { DraftStatus, PrismaClient } from "@prisma/client";
 import { MicrosoftGraphProvider } from "@/providers/microsoft-graph";
 import { accessTokenForAccount } from "@/auth/microsoft-tokens";
 import { sendTelegramMessage } from "@/telegram/client";
+import { recordSentUsage } from "./quota";
+import { writeAudit } from "./audit";
+import { recordOperationalAlert } from "./alerts";
 
 export type ServerlessSendResult = "SENT" | "IGNORED" | "TOO_EARLY" | "UNKNOWN";
 
@@ -41,6 +44,10 @@ export async function processScheduledOutgoing(
       include: { draft: { include: { account: { include: { user: { include: { destinations: true } } } } } } },
     });
     if (completed) {
+      await recordSentUsage(completed.draft.account.userId);
+      await writeAudit({
+        userId: completed.draft.account.userId, action: "EMAIL_SENT", entityType: "OutgoingMessage", entityId: outgoingId,
+      });
       await Promise.allSettled(completed.draft.account.user.destinations
         .filter((destination) => destination.enabled && destination.pairedAt)
         .map((destination) => sendTelegramMessage(destination.chatId,
@@ -64,6 +71,15 @@ export async function processScheduledOutgoing(
       include: { account: { include: { user: { include: { destinations: true } } } } },
     });
     if (affected) {
+      await recordOperationalAlert({
+        userId: affected.account.userId, accountId: affected.accountId,
+        dedupeKey: `send-uncertain:${outgoingId}`, kind: "SEND_UNCERTAIN",
+        title: "Email send status is uncertain", message: detail.slice(0, 1000),
+      });
+      await writeAudit({
+        userId: affected.account.userId, action: "EMAIL_SEND_UNCERTAIN", entityType: "OutgoingMessage",
+        entityId: outgoingId, severity: "ERROR", metadata: { error: detail.slice(0, 1000) },
+      });
       await Promise.allSettled(affected.account.user.destinations
         .filter((destination) => destination.enabled && destination.pairedAt)
         .map((destination) => sendTelegramMessage(destination.chatId,

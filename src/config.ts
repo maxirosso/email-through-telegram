@@ -6,7 +6,6 @@ const schema = z.object({
   MICROSOFT_CLIENT_ID: z.string().min(1),
   MICROSOFT_CLIENT_SECRET: z.string().min(1),
   MICROSOFT_REDIRECT_URI: z.string().url(),
-  MICROSOFT_OWNER_EMAIL: z.string().email(),
   MICROSOFT_WEBHOOK_SECRET: z.string().min(32),
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_WEBHOOK_SECRET: z.string().min(16),

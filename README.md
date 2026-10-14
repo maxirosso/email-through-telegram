@@ -1,6 +1,6 @@
 # MailPulse
 
-MailPulse is a private, single-user Outlook manager operated from Telegram. It runs as a Next.js serverless application, stores durable state in Supabase Postgres, and uses Upstash QStash for signed delayed jobs and reconciliation.
+MailPulse is a tenant-isolated Outlook manager operated from Telegram with a secure web operations dashboard. It runs as a Next.js serverless application, stores durable state in Supabase Postgres, and uses Upstash QStash for signed delayed jobs and reconciliation.
 
 ## Implemented
 
@@ -11,6 +11,8 @@ MailPulse is a private, single-user Outlook manager operated from Telegram. It r
 - A database-enforced, atomic **10-second Undo Send** window.
 - Signed QStash jobs, duplicate-update protection, conservative unknown-send handling, and stale-worker recovery without blind retries.
 - Password-protected operational dashboard, liveness/readiness endpoints, RLS on all application tables, and pooled TLS database connections.
+- Supabase magic-link authentication, invite-only tenant provisioning, tenant-bound Outlook OAuth, and one-time Telegram pairing codes.
+- Tenant-scoped settings, alerts, audits, quotas, notification retry, support, export/deletion requests, and safe retention cleanup.
 
 ## Architecture
 
@@ -36,7 +38,7 @@ npm run build
 npm run dev
 ```
 
-The dashboard uses HTTP Basic authentication. Its username is `DASHBOARD_USERNAME` (default `mailpulse`) and its password is `DASHBOARD_PASSWORD`. Use it only over HTTPS outside localhost.
+The dashboard uses Supabase magic-link authentication. HTTP Basic auth (`DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD`) remains an HTTPS-only emergency bootstrap fallback for the original owner tenant.
 
 ## Production deployment
 
@@ -45,8 +47,9 @@ The dashboard uses HTTP Basic authentication. Its username is `DASHBOARD_USERNAM
 3. Set these URL values to the final Vercel domain:
    - `APPLICATION_BASE_URL=https://YOUR-PROJECT.vercel.app`
    - `MICROSOFT_REDIRECT_URI=https://YOUR-PROJECT.vercel.app/api/oauth/microsoft/callback`
-4. Add that exact redirect URI to the MailPulse Microsoft Entra application.
-5. Deploy, then pull/use the production environment locally and run:
+4. Set the Supabase Auth Site URL to the production domain, allow `https://YOUR-PROJECT.vercel.app/auth/callback` and `http://localhost:3000/auth/callback`, and keep public signup disabled.
+5. Add the Microsoft redirect URI to the MailPulse Microsoft Entra application.
+6. Deploy, then pull/use the production environment locally and run:
 
 ```powershell
 npm run bootstrap:production
@@ -54,7 +57,7 @@ npm run bootstrap:production
 
 That command refuses localhost. It registers the Telegram webhook, initializes Outlook delta sync, creates the Graph subscription, and creates/updates the QStash five-minute maintenance schedule.
 
-6. Verify:
+7. Verify:
    - `GET /api/health/live` returns 200.
    - `GET /api/health/ready` returns 200.
    - The authenticated dashboard shows Outlook, Telegram, and Webhook as active.

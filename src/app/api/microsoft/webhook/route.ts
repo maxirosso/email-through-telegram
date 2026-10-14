@@ -3,6 +3,7 @@ import { z } from "zod";
 import { config } from "@/config";
 import { db } from "@/lib/db";
 import { enqueueSync } from "@/services/qstash";
+import { recordOperationalAlert } from "@/services/alerts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,6 +43,12 @@ export async function POST(request: Request) {
     if (notification.lifecycleEvent === "subscriptionRemoved") {
       await db.emailAccount.update({
         where: { id: account.id }, data: { webhookSubscriptionId: null, webhookExpiresAt: null },
+      });
+      const owner = await db.emailAccount.findUnique({ where: { id: account.id }, select: { userId: true } });
+      if (owner) await recordOperationalAlert({
+        userId: owner.userId, accountId: account.id, dedupeKey: `subscription:${account.id}`,
+        kind: "SUBSCRIPTION_REMOVED", title: "Outlook webhook subscription was removed",
+        message: "MailPulse will attempt to recreate the subscription during maintenance.",
       });
     }
     await enqueueSync(account.id, notification.resourceData?.id);

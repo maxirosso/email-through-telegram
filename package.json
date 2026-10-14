@@ -12,7 +12,8 @@
                     "db:generate":  "prisma generate",
                     "db:migrate":  "prisma migrate deploy",
                     "bootstrap:production":  "tsx --env-file=.env.local scripts/bootstrap-production.ts",
-                    "check:readiness":  "tsx --env-file=.env.local scripts/check-readiness.ts"
+                    "check:readiness":  "tsx --env-file=.env.local scripts/check-readiness.ts",
+                    "backup:production":  "tsx --env-file=.env.local scripts/backup-production.ts"
                 },
     "dependencies":  {
                          "@prisma/client":  "6.12.0",

@@ -11,6 +11,12 @@ describe("Microsoft OAuth state", () => {
     expect(created.challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 
+  it("binds an OAuth attempt to the initiating tenant", () => {
+    const created = createMicrosoftOAuthState(secret, "tenant-a", 1_000);
+    const verified = verifyMicrosoftOAuthState(created.cookieValue, created.state, secret, 2_000);
+    expect(verified.userId).toBe("tenant-a");
+  });
+
   it("rejects a mismatched state", () => {
     const created = createMicrosoftOAuthState(secret, 1_000);
     expect(() => verifyMicrosoftOAuthState(created.cookieValue, "wrong-state-value-that-is-at-least-32", secret, 2_000)).toThrow();

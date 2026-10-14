@@ -28,8 +28,19 @@ The MCP is scoped to this project and only enables `docs`, `database`, `debuggin
 
 After `DATABASE_URL` and `DIRECT_URL` are present in `.env.local`:
 
+Before production migration, configure Supabase Auth URL settings:
+
+- Site URL: `https://mailpulse-topaz.vercel.app`
+- Production redirect: `https://mailpulse-topaz.vercel.app/auth/callback`
+- Local redirect: `http://localhost:3000/auth/callback`
+- Keep `ALLOW_PUBLIC_SIGNUPS=false`; invite users through Supabase Auth unless public signup is deliberately approved.
+
+Then take or confirm a recovery point, run the security and performance advisors, and apply exactly once:
+
 ```powershell
 npm run db:migrate
 ```
+
+Run both advisors again after migration. The application tables intentionally have RLS with no browser-client policies because all tenant data is accessed by server-only Prisma; the `rls_enabled_no_policy` informational advisor notice is therefore expected.
 
 Do not use the publishable key as a database password or MCP token; it cannot authenticate either connection.

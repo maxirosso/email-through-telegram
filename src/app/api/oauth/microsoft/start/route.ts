@@ -2,13 +2,16 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { config } from "@/config";
 import { createMicrosoftOAuthState, MICROSOFT_OAUTH_COOKIE } from "@/auth/microsoft-oauth-state";
+import { requireDashboardUser } from "@/auth/dashboard-session";
+import { writeAudit } from "@/services/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   const env = config();
-  const oauth = createMicrosoftOAuthState(env.SESSION_SECRET);
+  const user = await requireDashboardUser();
+  const oauth = createMicrosoftOAuthState(env.SESSION_SECRET, user.id);
   const authorizeUrl = new URL("https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize");
   authorizeUrl.search = new URLSearchParams({
     client_id: env.MICROSOFT_CLIENT_ID,
@@ -29,6 +32,10 @@ export async function GET() {
     sameSite: "lax",
     maxAge: 10 * 60,
     path: "/api/oauth/microsoft/callback",
+  });
+  await writeAudit({
+    userId: user.id, actorAuthUserId: user.authUserId,
+    action: "MICROSOFT_OAUTH_STARTED", entityType: "EmailAccount",
   });
   return NextResponse.redirect(authorizeUrl);
 }

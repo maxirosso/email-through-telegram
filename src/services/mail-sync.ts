@@ -4,6 +4,7 @@ import type { ProviderMessage } from "@/providers/email-provider";
 import { MicrosoftGraphProvider } from "@/providers/microsoft-graph";
 import { sendTelegramMessage } from "@/telegram/client";
 import { incomingEmailMessage } from "@/telegram/format";
+import { recordOperationalAlert } from "./alerts";
 
 const MAX_DELTA_PAGES = 100;
 
@@ -121,6 +122,10 @@ export class MailSyncService {
     return { initialized: true, processed };
   }
 
+  async retryDelivery(messageId: string): Promise<void> {
+    await this.notify(messageId);
+  }
+
   private async notify(messageId: string): Promise<void> {
     const message = await this.prisma.emailMessage.findUniqueOrThrow({
       where: { id: messageId },
@@ -163,9 +168,15 @@ export class MailSyncService {
           where: { id: delivery.id }, data: { status: DeliveryStatus.SENT, telegramMessageId: BigInt(result.message_id) },
         });
       } catch (error) {
+        const detail = error instanceof Error ? error.message.slice(0, 1000) : "Unknown error";
         await this.prisma.notificationDelivery.update({
           where: { id: delivery.id },
-          data: { status: DeliveryStatus.FAILED, lastError: error instanceof Error ? error.message.slice(0, 1000) : "Unknown error" },
+          data: { status: DeliveryStatus.FAILED, lastError: detail },
+        });
+        await recordOperationalAlert({
+          userId: message.account.userId, accountId: message.accountId,
+          dedupeKey: `delivery:${delivery.id}`, kind: "DELIVERY_FAILED",
+          title: "Telegram delivery failed", message: detail,
         });
         throw error;
       }

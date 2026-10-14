@@ -10,6 +10,43 @@ datasource db {
 
 enum EmailProviderKind {
   MICROSOFT
+  GMAIL
+}
+
+enum AccountAccessMode {
+  PRIMARY
+  SHARED
+}
+
+enum PlanTier {
+  FREE
+  PRO
+  BUSINESS
+}
+
+enum BillingStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  ERROR
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+enum SupportStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
 }
 
 enum ConnectionStatus {
@@ -43,21 +80,32 @@ enum DeliveryStatus {
 }
 
 model ApplicationUser {
-  id           String                @id @default(cuid())
-  email        String?               @unique
-  displayName  String?
-  createdAt    DateTime              @default(now())
-  updatedAt    DateTime              @updatedAt
-  accounts     EmailAccount[]
-  destinations TelegramDestination[]
-  settings     ApplicationSettings?
+  id                String                @id @default(cuid())
+  authUserId        String?               @unique @db.Uuid
+  email             String?               @unique
+  displayName       String?
+  isPlatformAdmin   Boolean               @default(false)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  accounts          EmailAccount[]
+  destinations      TelegramDestination[]
+  settings          ApplicationSettings?
+  billing           BillingSubscription?
+  usageCounters     UsageCounter[]
+  auditEvents       AuditEvent[]
+  alerts            AlertEvent[]
+  supportCases      SupportCase[]
+  telegramPairCodes TelegramPairingCode[]
 }
 
 model EmailAccount {
   id                    String            @id @default(cuid())
   userId                String
   provider              EmailProviderKind
+  accessMode            AccountAccessMode @default(PRIMARY)
   emailAddress          String
+  displayName           String?
+  mailboxAddress        String?
   providerAccountId     String
   encryptedTokens       String
   enabled               Boolean           @default(true)
@@ -73,6 +121,7 @@ model EmailAccount {
   messages              EmailMessage[]
   drafts                EmailDraft[]
   syncCheckpoint        SyncCheckpoint?
+  alerts                AlertEvent[]
 
   @@unique([provider, providerAccountId])
   @@unique([userId, emailAddress])
@@ -229,5 +278,104 @@ model ApplicationSettings {
   timezone                  String          @default("America/Buenos_Aires")
   undoSendSeconds           Int             @default(10)
   notificationPreviewLength Int             @default(2500)
+  messageRetentionDays      Int             @default(90)
+  auditRetentionDays        Int             @default(365)
+  alertOnFailure            Boolean         @default(true)
+  deletionRequestedAt       DateTime?
   user                      ApplicationUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model BillingSubscription {
+  id                    String          @id @default(cuid())
+  userId                String          @unique
+  plan                  PlanTier        @default(FREE)
+  status                BillingStatus   @default(ACTIVE)
+  billingCustomerId     String?         @unique
+  billingSubscriptionId String?         @unique
+  currentPeriodStart    DateTime        @default(now())
+  currentPeriodEnd      DateTime?
+  monthlyMessageLimit   Int             @default(1000)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  user                  ApplicationUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UsageCounter {
+  id          String          @id @default(cuid())
+  userId      String
+  metric      String
+  periodStart DateTime
+  quantity    Int             @default(0)
+  updatedAt   DateTime        @updatedAt
+  user        ApplicationUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, metric, periodStart])
+  @@index([userId, periodStart(sort: Desc)])
+}
+
+model AuditEvent {
+  id              String          @id @default(cuid())
+  userId          String
+  actorAuthUserId String?         @db.Uuid
+  action          String
+  entityType      String
+  entityId        String?
+  severity        AuditSeverity   @default(INFO)
+  metadata        Json?
+  createdAt       DateTime        @default(now())
+  user            ApplicationUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, severity, createdAt(sort: Desc)])
+}
+
+model AlertEvent {
+  id              String          @id @default(cuid())
+  userId          String
+  accountId       String?
+  dedupeKey       String
+  kind            String
+  title           String
+  message         String
+  status          AlertStatus     @default(OPEN)
+  occurrenceCount Int             @default(1)
+  firstSeenAt     DateTime        @default(now())
+  lastSeenAt      DateTime        @default(now())
+  lastNotifiedAt  DateTime?
+  resolvedAt      DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  user            ApplicationUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account         EmailAccount?   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, status, lastSeenAt(sort: Desc)])
+  @@index([accountId])
+}
+
+model SupportCase {
+  id         String          @id @default(cuid())
+  userId     String
+  subject    String
+  message    String
+  status     SupportStatus   @default(OPEN)
+  priority   String          @default("NORMAL")
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  resolvedAt DateTime?
+  user       ApplicationUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt(sort: Desc)])
+}
+
+model TelegramPairingCode {
+  id        String          @id @default(cuid())
+  userId    String
+  codeHash  String          @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime        @default(now())
+  user      ApplicationUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt(sort: Desc)])
 }

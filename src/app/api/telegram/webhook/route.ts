@@ -7,6 +7,9 @@ import { logger } from "@/lib/logger";
 import { MicrosoftGraphProvider } from "@/providers/microsoft-graph";
 import { OutgoingService } from "@/services/outgoing";
 import { scheduleServerlessSend } from "@/services/qstash-scheduler";
+import { assertSendQuota } from "@/services/quota";
+import { redeemTelegramPairingCode } from "@/services/telegram-pairing";
+import { writeAudit } from "@/services/audit";
 import {
   answerCallbackQuery, getTelegramFile, sendTelegramDocument, sendTelegramMessage,
 } from "@/telegram/client";
@@ -342,7 +345,9 @@ async function handleCallback(destination: Destination, id: string, data: string
       await answerCallbackQuery(id, draft.status === "SENT" ? "This email was already sent." : "This email is already scheduled.");
       return;
     }
+    await assertSendQuota(destination.userId);
     const result = await scheduleServerlessSend(draft.id);
+    await writeAudit({ userId: destination.userId, action: "EMAIL_SCHEDULED", entityType: "OutgoingMessage", entityId: result.outgoing.id });
     await db.telegramConversationState.deleteMany({
       where: { destinationId: destination.id, activeDraftId: draft.id },
     });
@@ -373,6 +378,7 @@ async function handleCallback(destination: Destination, id: string, data: string
     }
     const result = await new OutgoingService(db, config().UNDO_SEND_SECONDS).undo(objectId);
     if (result === "CANCELLED") {
+      await writeAudit({ userId: destination.userId, action: "EMAIL_SEND_UNDONE", entityType: "OutgoingMessage", entityId: objectId });
       await answerCallbackQuery(id, "Email sending cancelled.");
       await sendTelegramMessage(destination.chatId, "✅ <b>Email sending cancelled.</b>\n\nYour email has not been sent.");
     } else await answerCallbackQuery(id, "Too late to cancel: sending has already started.", true);
@@ -403,7 +409,8 @@ export async function POST(request: Request) {
       else await handleCallback(destination, callback.id, callback.data);
     } else if (parsed.data.message?.from) {
       const message = parsed.data.message;
-      const destination = await authorizedDestination(message.from!.id, message.chat.id);
+      const sender = message.from!;
+      const destination = await authorizedDestination(sender.id, message.chat.id);
       if (destination) {
         const photo = message.photo?.at(-1);
         const attachment = message.document ?? photo;
@@ -411,6 +418,14 @@ export async function POST(request: Request) {
           const receivedAt = new Date((message.date ?? Math.floor(Date.now() / 1000)) * 1000);
           await handleAttachment(destination, attachment, message.document ? "document" : "photo", receivedAt);
         } else if (message.text) await handleText(destination, message.text);
+      } else if (message.chat.id === sender.id && message.text) {
+        const match = message.text.trim().match(/^\/start(?:@\w+)?\s+(MP-\d{6})$/i);
+        if (match) {
+          const paired = await redeemTelegramPairingCode(match[1], BigInt(sender.id), BigInt(message.chat.id));
+          await sendTelegramMessage(BigInt(message.chat.id), paired
+            ? "✅ <b>Telegram paired.</b>\n\nUse /status to confirm your mailbox connection."
+            : "This pairing code is invalid, expired, or already used.");
+        }
       }
     }
     return new Response(null, { status: 204 });

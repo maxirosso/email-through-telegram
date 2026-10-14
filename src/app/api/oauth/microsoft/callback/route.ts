@@ -5,6 +5,7 @@ import { MICROSOFT_OAUTH_COOKIE, verifyMicrosoftOAuthState } from "@/auth/micros
 import { config } from "@/config";
 import { encryptJson } from "@/lib/crypto";
 import { db } from "@/lib/db";
+import { writeAudit } from "@/services/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,6 +43,7 @@ export async function GET(request: Request) {
 
   try {
     const verified = verifyMicrosoftOAuthState(stateCookie, state, env.SESSION_SECRET);
+    if (!verified.userId) throw new Error("OAuth state is not linked to a tenant");
     const tokenResponse = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -65,11 +67,11 @@ export async function GET(request: Request) {
     });
     if (!profileResponse.ok) throw new Error("Microsoft profile request failed");
     const profile = profileSchema.parse(await profileResponse.json());
-    const allowedEmail = env.MICROSOFT_OWNER_EMAIL.toLowerCase();
     const profileEmails = [profile.mail, profile.userPrincipalName, ...(profile.otherMails ?? [])]
       .filter((value): value is string => Boolean(value))
       .map((value) => value.toLowerCase());
-    if (!profileEmails.includes(allowedEmail)) throw new Error("Microsoft account is not the configured owner");
+    const primaryEmail = (profile.mail ?? profile.userPrincipalName ?? profileEmails[0])?.toLowerCase();
+    if (!primaryEmail) throw new Error("Microsoft profile did not include an email address");
 
     const encryptedTokens = encryptJson({
       accessToken: token.access_token,
@@ -79,33 +81,39 @@ export async function GET(request: Request) {
     }, env.ENCRYPTION_KEY);
 
     await db.$transaction(async (tx) => {
-      const user = await tx.applicationUser.upsert({
-        where: { email: allowedEmail },
-        create: { email: allowedEmail, displayName: profile.displayName ?? "MailPulse Owner" },
-        update: { displayName: profile.displayName ?? undefined },
+      const user = await tx.applicationUser.findUniqueOrThrow({ where: { id: verified.userId } });
+      const existingAccount = await tx.emailAccount.findUnique({
+        where: { provider_providerAccountId: { provider: "MICROSOFT", providerAccountId: profile.id } },
       });
+      if (existingAccount && existingAccount.userId !== user.id) {
+        throw new Error("This Microsoft mailbox is already connected to another tenant");
+      }
       await tx.applicationSettings.upsert({
         where: { userId: user.id },
         create: { userId: user.id, timezone: env.DEFAULT_TIMEZONE, undoSendSeconds: env.UNDO_SEND_SECONDS },
         update: {},
       });
-      await tx.emailAccount.upsert({
-        where: { provider_providerAccountId: { provider: "MICROSOFT", providerAccountId: profile.id } },
-        create: {
+      if (existingAccount) {
+        await tx.emailAccount.update({
+          where: { id: existingAccount.id },
+          data: {
+            emailAddress: primaryEmail, encryptedTokens, enabled: true, notificationsOn: true,
+            connectionStatus: "CONNECTED",
+          },
+        });
+      } else {
+        await tx.emailAccount.create({ data: {
           userId: user.id,
           provider: "MICROSOFT",
           providerAccountId: profile.id,
-          emailAddress: allowedEmail,
+          emailAddress: primaryEmail,
           encryptedTokens,
-        },
-        update: {
-          userId: user.id,
-          emailAddress: allowedEmail,
-          encryptedTokens,
-          enabled: true,
-          connectionStatus: "CONNECTED",
-        },
-      });
+        } });
+      }
+    });
+    await writeAudit({
+      userId: verified.userId, action: "MICROSOFT_CONNECTED", entityType: "EmailAccount",
+      entityId: profile.id, metadata: { emailAddress: primaryEmail },
     });
     return NextResponse.redirect(home(request, "connected"));
   } catch {
