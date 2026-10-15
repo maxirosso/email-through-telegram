@@ -45,6 +45,7 @@ export interface EmailProvider {
   readonly kind: "MICROSOFT";
   listMessageDelta(cursor?: string): Promise<MessageDeltaPage>;
   getMessage(messageId: string): Promise<ProviderMessage>;
+  getMessageBody(messageId: string): Promise<string>;
   listMessageAttachments(messageId: string): Promise<ProviderAttachment[]>;
   downloadMessageAttachment(messageId: string, attachmentId: string): Promise<Uint8Array>;
   createDraft(update: DraftUpdate): Promise<{ id: string }>;

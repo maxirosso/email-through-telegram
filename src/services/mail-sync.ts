@@ -159,10 +159,14 @@ export class MailSyncService {
             receivedAt: message.receivedAt,
             attachmentCount: message.attachments.length,
           }),
-          [[
+          [
+            [{ text: "📖 Read full email", callback_data: `read:${message.id}` }],
+            [
             { text: "↩️ Reply", callback_data: `reply:${message.id}` },
             { text: "↩️ Reply all", callback_data: `replyall:${message.id}` },
-          ], ...(message.attachments.length ? [[{ text: "📎 Attachments", callback_data: `files:${message.id}` }]] : [])],
+            ],
+            ...(message.attachments.length ? [[{ text: "📎 Attachments", callback_data: `files:${message.id}` }]] : []),
+          ],
         );
         await this.prisma.notificationDelivery.update({
           where: { id: delivery.id }, data: { status: DeliveryStatus.SENT, telegramMessageId: BigInt(result.message_id) },

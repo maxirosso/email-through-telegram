@@ -41,6 +41,7 @@ Supabase Auth still needs project-level configuration and the first owner invite
 - Undo Send is 10 seconds and send work is claimed atomically.
 - Ambiguous sends become `UNKNOWN_SEND_STATUS` and are not blindly retried.
 - Maintenance detects stale send workers.
+- Incoming email notifications show a compact preview; **Read full email** fetches the complete plain-text body from Outlook on demand, delivers it in readable Telegram chunks, and uses a text-file fallback for exceptionally long messages.
 - Incoming attachments can be downloaded through Telegram.
 - Outgoing photos/documents are attached to Outlook drafts.
 - Multiple attachments and removal are supported.

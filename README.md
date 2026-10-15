@@ -7,7 +7,7 @@ MailPulse is a tenant-isolated Outlook manager operated from Telegram with a sec
 - Microsoft personal-account OAuth with PKCE, signed state, owner-email enforcement, encrypted refresh tokens, and refresh handling.
 - Microsoft Graph Inbox delta synchronization plus change-notification subscriptions and automatic renewal.
 - Durable email/attachment metadata in Supabase; attachment bytes are streamed only when needed.
-- Authorized Telegram notifications plus a polished `/new` compose flow, Reply/Reply All drafts, editable previews, incoming/outgoing attachments, confirmation, cancellation, and Undo Send.
+- Authorized Telegram notifications with on-demand full email reading, plus a polished `/new` compose flow, Reply/Reply All drafts, editable previews, incoming/outgoing attachments, confirmation, cancellation, and Undo Send.
 - A database-enforced, atomic **10-second Undo Send** window.
 - Signed QStash jobs, duplicate-update protection, conservative unknown-send handling, and stale-worker recovery without blind retries.
 - Password-protected operational dashboard, liveness/readiness endpoints, RLS on all application tables, and pooled TLS database connections.

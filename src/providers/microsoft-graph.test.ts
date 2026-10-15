@@ -30,6 +30,24 @@ describe("MicrosoftGraphProvider", () => {
     expect(fetchMock.mock.calls[0][1].headers.Prefer).toContain("body-content-type");
   });
 
+  it("fetches the complete plain-text body when opening one message", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "message-1",
+      sender: { emailAddress: { address: "sender@example.com" } },
+      subject: "Long email",
+      bodyPreview: "A short preview that stops",
+      body: { content: "The complete email body continues through the final sentence." },
+      receivedDateTime: "2026-10-15T15:49:33Z",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const body = await new MicrosoftGraphProvider("token").getMessageBody("message-1");
+
+    expect(body).toBe("The complete email body continues through the final sentence.");
+    expect(String(fetchMock.mock.calls[0][0])).toContain("$select=body");
+    expect(fetchMock.mock.calls[0][1].headers.Prefer).toBe('outlook.body-content-type="text"');
+  });
+
   it("sends the attachment filename and MIME type to Outlook", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "attachment-1" }), {
       status: 201, headers: { "Content-Type": "application/json" },

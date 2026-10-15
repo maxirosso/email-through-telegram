@@ -11,11 +11,14 @@ import { assertSendQuota } from "@/services/quota";
 import { redeemTelegramPairingCode } from "@/services/telegram-pairing";
 import { writeAudit } from "@/services/audit";
 import {
-  answerCallbackQuery, getTelegramFile, sendTelegramDocument, sendTelegramMessage,
+  answerCallbackQuery, getTelegramFile, sendTelegramDocument, sendTelegramMessage, sendTelegramPlainMessage,
 } from "@/telegram/client";
 import { normalizeTelegramAttachment, TelegramAttachmentKind } from "@/telegram/attachments";
 import { parseRecipients, validateBody, validateSubject } from "@/telegram/compose";
 import { composePrompt, draftPreview, escapeHtml, homeMessage, scheduledMessage, truncate } from "@/telegram/format";
+import {
+  fullEmailFilename, splitTelegramEmail, TELEGRAM_EMAIL_FILE_THRESHOLD,
+} from "@/telegram/full-email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -518,7 +521,10 @@ async function handleCommand(destination: Destination, command: string) {
     for (const message of messages) {
       await sendTelegramMessage(destination.chatId,
         `<b>${escapeHtml(message.subject)}</b>\n👤 ${escapeHtml(message.senderAddress)}`,
-        [[{ text: "↩️ Reply", callback_data: `reply:${message.id}` }, { text: "↩️ Reply all", callback_data: `replyall:${message.id}` }]],
+        [
+          [{ text: "📖 Read full email", callback_data: `read:${message.id}` }],
+          [{ text: "↩️ Reply", callback_data: `reply:${message.id}` }, { text: "↩️ Reply all", callback_data: `replyall:${message.id}` }],
+        ],
       );
     }
     return;
@@ -567,6 +573,74 @@ async function handleCallback(destination: Destination, id: string, data: string
   if (action === "compose") {
     await answerCallbackQuery(id, "Starting a new email…");
     await beginNewEmail(destination, objectId === "auto" ? undefined : objectId);
+    return;
+  }
+  if (action === "read") {
+    const message = await db.emailMessage.findFirst({
+      where: { id: objectId, account: { userId: destination.userId } },
+      select: {
+        accountId: true,
+        providerMessageId: true,
+        senderName: true,
+        senderAddress: true,
+        subject: true,
+      },
+    });
+    if (!message) {
+      await answerCallbackQuery(id, "Email not found.", true);
+      return;
+    }
+
+    await answerCallbackQuery(id, "Loading the full email…");
+    try {
+      const body = await (await providerFor(message.accountId)).getMessageBody(message.providerMessageId);
+      const sender = message.senderName
+        ? `${escapeHtml(message.senderName)} &lt;${escapeHtml(message.senderAddress)}&gt;`
+        : escapeHtml(message.senderAddress);
+      await sendTelegramMessage(destination.chatId, [
+        "📖 <b>FULL EMAIL</b>",
+        "",
+        `👤 From: ${sender}`,
+        `📌 Subject: ${escapeHtml(message.subject)}`,
+      ].join("\n"));
+
+      const replyButtons = [[
+        { text: "↩️ Reply", callback_data: `reply:${objectId}` },
+        { text: "↩️ Reply all", callback_data: `replyall:${objectId}` },
+      ]];
+      if (body.length > TELEGRAM_EMAIL_FILE_THRESHOLD) {
+        const fileText = [
+          `From: ${message.senderName ? `${message.senderName} <${message.senderAddress}>` : message.senderAddress}`,
+          `Subject: ${message.subject}`,
+          "",
+          body || "(This email has no text body.)",
+        ].join("\n");
+        await sendTelegramDocument(
+          destination.chatId,
+          fullEmailFilename(message.subject),
+          "text/plain; charset=utf-8",
+          new TextEncoder().encode(fileText),
+          "The complete email is attached as a text file.",
+        );
+        await sendTelegramMessage(destination.chatId, "What would you like to do?", replyButtons);
+        return;
+      }
+
+      const chunks = splitTelegramEmail(body);
+      for (const [index, chunk] of chunks.entries()) {
+        await sendTelegramPlainMessage(
+          destination.chatId,
+          chunks.length > 1 ? `${index + 1}/${chunks.length}\n\n${chunk}` : chunk,
+          index === chunks.length - 1 ? replyButtons : undefined,
+        );
+      }
+    } catch (error) {
+      logger.error({ err: error, messageId: objectId }, "Full email delivery failed");
+      await sendTelegramMessage(
+        destination.chatId,
+        "I could not load the full email right now. Please try again in a moment.",
+      );
+    }
     return;
   }
   if (action === "reply" || action === "replyall") {

@@ -33,6 +33,19 @@ export function sendTelegramMessage(
   });
 }
 
+export function sendTelegramPlainMessage(
+  chatId: bigint,
+  text: string,
+  buttons?: InlineButton[][],
+) {
+  return telegram<{ message_id: number }>("sendMessage", {
+    chat_id: chatId.toString(),
+    text,
+    disable_web_page_preview: true,
+    ...(buttons ? { reply_markup: { inline_keyboard: buttons } } : {}),
+  });
+}
+
 export function answerCallbackQuery(callbackQueryId: string, text: string, showAlert = false) {
   return telegram<boolean>("answerCallbackQuery", {
     callback_query_id: callbackQueryId,

@@ -85,6 +85,15 @@ export class MicrosoftGraphProvider implements EmailProvider {
     return normalizeMessage((await response.json()) as GraphMessage);
   }
 
+  async getMessageBody(messageId: string): Promise<string> {
+    const response = await this.request(
+      `/me/messages/${encodeURIComponent(messageId)}?$select=body`,
+      { headers: { Prefer: 'outlook.body-content-type="text"' } },
+    );
+    const message = (await response.json()) as GraphMessage;
+    return message.body?.content?.trim() || "";
+  }
+
   async listMessageAttachments(messageId: string): Promise<ProviderAttachment[]> {
     const response = await this.request(
       `/me/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,size,isInline`,
