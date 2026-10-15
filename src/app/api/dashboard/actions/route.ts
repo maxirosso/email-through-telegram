@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireDashboardUser } from "@/auth/dashboard-session";
 import { createTelegramPairingCode } from "@/services/telegram-pairing";
 import {
-  acknowledgeTenantAlert, createTenantSupportCase, retryTenantDelivery, runTenantRetention,
+  acknowledgeTenantAlert, approveClient, createTenantSupportCase, retryTenantDelivery, runTenantRetention,
   setTenantAccountEnabled, setTenantDeletionRequest, updateTenantSettings,
 } from "@/services/tenant-operations";
 
@@ -26,6 +26,18 @@ export async function POST(request: Request) {
     const user = await requireDashboardUser();
     const form = await request.formData();
     const action = z.string().max(40).parse(form.get("action"));
+    if (action === "approve-client") {
+      if (!user.isPlatformAdmin) return dashboard(request, "admin-required");
+      const values = z.object({
+        email: z.string().trim().email().max(320),
+        displayName: z.string().trim().max(120).optional(),
+      }).parse({
+        email: form.get("email"),
+        displayName: form.get("displayName") || undefined,
+      });
+      await approveClient(user.id, values.email, values.displayName);
+      return dashboard(request, "client-approved");
+    }
     if (action === "pair") {
       const pairing = await createTelegramPairingCode(user.id);
       return dashboard(request, `pair:${pairing.code}`);

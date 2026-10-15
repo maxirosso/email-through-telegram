@@ -20,6 +20,9 @@ async function provisionAuthUser(authUser: { id: string; email?: string; user_me
     let user = await tx.applicationUser.findUnique({ where: { authUserId: authUser.id } });
     if (!user) {
       const existing = await tx.applicationUser.findUnique({ where: { email } });
+      if (!existing && process.env.ALLOW_PUBLIC_SIGNUPS !== "true") {
+        throw new Error("This email has not been approved by the MailPulse administrator");
+      }
       if (existing?.authUserId && existing.authUserId !== authUser.id) {
         throw new Error("This email is already linked to another identity");
       }

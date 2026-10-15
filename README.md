@@ -4,6 +4,8 @@ MailPulse is a tenant-isolated Outlook manager operated from Telegram with a sec
 
 The website is the setup, security, and recovery surface: invited users sign in by magic link, connect Outlook, and pair a private Telegram chat. Daily email work happens in Telegram.
 
+The platform administrator has an admin-only client approval panel. Approval creates a server-side allowlist record; only approved email addresses may create a Supabase Auth identity through the MailPulse magic-link route.
+
 ## Implemented
 
 - Microsoft personal-account OAuth with PKCE, signed state, owner-email enforcement, encrypted refresh tokens, and refresh handling.

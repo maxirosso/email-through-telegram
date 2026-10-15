@@ -9,6 +9,8 @@ MailPulse has a deployed, verified single-owner production baseline for Outlook 
 
 The user-facing product model is explicit in the UI: the website handles invited sign-in, Outlook connection, Telegram pairing, security, and recovery; Telegram handles the daily read, reply, compose, attachment, send, and undo workflow.
 
+Client access is controlled from the dashboard by the database-backed platform administrator. The admin-only approval panel allowlists an email before the magic-link route may create its Supabase Auth identity; authorization never relies on user-editable metadata.
+
 The tenant-aware Outlook/Telegram foundation is deployed and its production migration is applied. It is suitable for the owner's personal use and an invite-only pilot within free-tier limitations. It is not yet a finished commercial multi-provider SaaS.
 
 Supabase Auth still needs project-level configuration and the first owner invite. Until then, the HTTPS-only Basic-auth bootstrap remains the working dashboard login. Gmail, Microsoft 365 shared-mailbox validation, paid billing, commercial backup/SLA coverage, and the final human acceptance run remain outside this release.

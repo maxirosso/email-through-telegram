@@ -3,6 +3,70 @@ import { MailSyncService } from "./mail-sync";
 import { writeAudit } from "./audit";
 import { usageSummary } from "./quota";
 
+export async function approveClient(
+  actorUserId: string,
+  email: string,
+  displayName?: string,
+) {
+  const normalizedEmail = email.trim().toLowerCase();
+  return db.$transaction(async (tx) => {
+    const actor = await tx.applicationUser.findFirst({
+      where: { id: actorUserId, isPlatformAdmin: true },
+      select: { id: true, authUserId: true },
+    });
+    if (!actor) throw new Error("PLATFORM_ADMIN_REQUIRED");
+
+    const client = await tx.applicationUser.upsert({
+      where: { email: normalizedEmail },
+      create: {
+        email: normalizedEmail,
+        displayName: displayName?.trim() || normalizedEmail.split("@")[0],
+      },
+      update: displayName?.trim() ? { displayName: displayName.trim() } : {},
+    });
+    await tx.applicationSettings.upsert({
+      where: { userId: client.id },
+      create: { userId: client.id },
+      update: {},
+    });
+    await tx.billingSubscription.upsert({
+      where: { userId: client.id },
+      create: { userId: client.id, plan: "FREE", status: "ACTIVE", monthlyMessageLimit: 1000 },
+      update: {},
+    });
+    await tx.auditEvent.create({
+      data: {
+        userId: actor.id,
+        actorAuthUserId: actor.authUserId,
+        action: "CLIENT_APPROVED",
+        entityType: "ApplicationUser",
+        entityId: client.id,
+        metadata: { approvedEmail: normalizedEmail },
+      },
+    });
+    return client;
+  });
+}
+
+export async function getApprovedClients(actorUserId: string) {
+  const actor = await db.applicationUser.findFirst({
+    where: { id: actorUserId, isPlatformAdmin: true },
+    select: { id: true },
+  });
+  if (!actor) throw new Error("PLATFORM_ADMIN_REQUIRED");
+  return db.applicationUser.findMany({
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      authUserId: true,
+      isPlatformAdmin: true,
+      createdAt: true,
+    },
+  });
+}
+
 export async function getTenantDashboardData(userId: string) {
   const [accounts, destination, settings, usage, messages, outgoing, deliveries, alerts, audits, supportCases] = await db.$transaction([
     db.emailAccount.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),

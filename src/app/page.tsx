@@ -1,5 +1,5 @@
 import { requireDashboardUser } from "@/auth/dashboard-session";
-import { getTenantDashboardData } from "@/services/tenant-operations";
+import { getApprovedClients, getTenantDashboardData } from "@/services/tenant-operations";
 
 export const dynamic = "force-dynamic";
 
@@ -19,12 +19,18 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ m
   const user = await requireDashboardUser();
   const params = await searchParams;
   const data = await getTenantDashboardData(user.id);
+  const approvedClients = user.isPlatformAdmin ? await getApprovedClients(user.id) : [];
   const connected = data.accounts.some((account) => account.enabled && account.connectionStatus === "CONNECTED");
   const paired = Boolean(data.destination);
   const webhook = data.accounts.some((account) => account.webhookSubscriptionId && account.webhookExpiresAt && account.webhookExpiresAt > new Date());
   const pairingCode = params.result?.startsWith("pair:") ? params.result.slice(5) : undefined;
   const settings = data.settings;
   const quotaLimit = data.subscription?.monthlyMessageLimit ?? 1000;
+  const resultMessage = params.result === "client-approved"
+    ? "Client approved. They can now request a sign-in link using the approved email address."
+    : params.result === "admin-required"
+      ? "Only the MailPulse administrator can approve clients."
+      : params.result?.replaceAll("-", " ");
 
   return <main>
     <nav className="topbar">
@@ -40,8 +46,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ m
         <span><b>Website</b> Setup, security, and recovery</span>
         <span><b>Telegram</b> Read, reply, and send email</span>
       </div>
-      {params.result && <div className={params.result === "error" ? "notice error" : "notice"}>
-        {pairingCode ? <>Pairing code: <b>{pairingCode}</b>. In a private chat with your bot, send <code>/start {pairingCode}</code>. It expires in 15 minutes.</> : params.result.replaceAll("-", " ")}
+      {params.result && <div className={["error", "admin-required"].includes(params.result) ? "notice error" : "notice"}>
+        {pairingCode ? <>Pairing code: <b>{pairingCode}</b>. In a private chat with your bot, send <code>/start {pairingCode}</code>. It expires in 15 minutes.</> : resultMessage}
       </div>}
     </section>
 
@@ -53,6 +59,29 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ m
         <div className={webhook ? "complete" : ""}><b>3</b><span><strong>Start using MailPulse in Telegram</strong><small>{webhook ? "Send /menu to the bot whenever you need it" : "Inbox sync activates automatically after Outlook connects"}</small></span><span className="tag">{webhook ? "Ready" : "Pending"}</span></div>
       </div>
     </section>
+
+    {user.isPlatformAdmin && <section className="panel admin-access">
+      <div className="section-heading">
+        <div><small>ADMIN ONLY</small><h2>Approve a client</h2></div>
+        <span>{approvedClients.length} approved</span>
+      </div>
+      <p className="muted">Add the exact email address your client will use to sign in. They can then open the MailPulse login page, request a secure magic link, connect their own Outlook account, and pair Telegram.</p>
+      <form action="/api/dashboard/actions" method="post" className="admin-approval-form">
+        <input type="hidden" name="action" value="approve-client" />
+        <label>Client name <input name="displayName" maxLength={120} placeholder="Optional" /></label>
+        <label>Client email <input name="email" type="email" autoComplete="off" maxLength={320} required placeholder="client@company.com" /></label>
+        <button className="button small-button">Approve client</button>
+      </form>
+      <div className="approved-clients">
+        {approvedClients.map((client) => <div className="operation-row" key={client.id}>
+          <div>
+            <strong>{client.displayName || client.email}</strong>
+            <span>{client.email} · {client.isPlatformAdmin ? "Administrator" : client.authUserId ? "Active" : "Approved—waiting for first sign-in"}</span>
+          </div>
+          <span className="tag">{client.isPlatformAdmin ? "Admin" : client.authUserId ? "Active" : "Approved"}</span>
+        </div>)}
+      </div>
+    </section>}
 
     <section className="grid stats">
       <article><small>OUTLOOK</small><strong>{connected ? "Connected" : "Not connected"}</strong><p>{data.accounts.length} mailbox{data.accounts.length === 1 ? "" : "es"}<br />Latest sync: {when(data.accounts[0]?.lastSyncedAt)}</p></article>
