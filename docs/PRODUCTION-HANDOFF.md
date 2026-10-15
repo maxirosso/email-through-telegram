@@ -7,6 +7,8 @@ Production URL: https://mailpulse-topaz.vercel.app
 
 MailPulse has a deployed, verified single-owner production baseline for Outlook and Telegram. It receives Outlook email, notifies the authorized Telegram chat, composes new messages, creates reply/reply-all drafts, accepts files and iPhone photos, previews and edits drafts, and sends after a durable 10-second undo window.
 
+The user-facing product model is explicit in the UI: the website handles invited sign-in, Outlook connection, Telegram pairing, security, and recovery; Telegram handles the daily read, reply, compose, attachment, send, and undo workflow.
+
 The tenant-aware Outlook/Telegram foundation is deployed and its production migration is applied. It is suitable for the owner's personal use and an invite-only pilot within free-tier limitations. It is not yet a finished commercial multi-provider SaaS.
 
 Supabase Auth still needs project-level configuration and the first owner invite. Until then, the HTTPS-only Basic-auth bootstrap remains the working dashboard login. Gmail, Microsoft 365 shared-mailbox validation, paid billing, commercial backup/SLA coverage, and the final human acceptance run remain outside this release.

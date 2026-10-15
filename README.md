@@ -2,6 +2,8 @@
 
 MailPulse is a tenant-isolated Outlook manager operated from Telegram with a secure web operations dashboard. It runs as a Next.js serverless application, stores durable state in Supabase Postgres, and uses Upstash QStash for signed delayed jobs and reconciliation.
 
+The website is the setup, security, and recovery surface: invited users sign in by magic link, connect Outlook, and pair a private Telegram chat. Daily email work happens in Telegram.
+
 ## Implemented
 
 - Microsoft personal-account OAuth with PKCE, signed state, owner-email enforcement, encrypted refresh tokens, and refresh handling.

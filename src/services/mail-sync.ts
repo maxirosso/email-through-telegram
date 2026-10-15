@@ -1,5 +1,6 @@
 import { DeliveryStatus, Prisma, PrismaClient } from "@prisma/client";
 import { accessTokenForAccount } from "@/auth/microsoft-tokens";
+import { config } from "@/config";
 import type { ProviderMessage } from "@/providers/email-provider";
 import { MicrosoftGraphProvider } from "@/providers/microsoft-graph";
 import { sendTelegramMessage } from "@/telegram/client";
@@ -131,7 +132,7 @@ export class MailSyncService {
       where: { id: messageId },
       include: {
         attachments: true,
-        account: { include: { user: { include: { destinations: true } } } },
+        account: { include: { user: { include: { destinations: true, settings: true } } } },
       },
     });
     if (!message.account.notificationsOn) return;
@@ -158,6 +159,7 @@ export class MailSyncService {
             preview: message.sanitizedPreview,
             receivedAt: message.receivedAt,
             attachmentCount: message.attachments.length,
+            timezone: message.account.user.settings?.timezone ?? config().DEFAULT_TIMEZONE,
           }),
           [
             [{ text: "📖 Read full email", callback_data: `read:${message.id}` }],

@@ -33,28 +33,32 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ m
     </nav>
 
     <section className="hero compact">
-      <div className="eyebrow">TENANT OPERATIONS</div>
-      <h1>Your inbox, under control.</h1>
-      <p>Monitor mailbox health, Telegram delivery, scheduled replies, and recovery actions from one place.</p>
+      <div className="eyebrow">SETUP & SECURITY</div>
+      <h1>Connect Outlook. Work from Telegram.</h1>
+      <p>Use this website to connect your mailbox, pair your private Telegram chat, and check account health. Your everyday email workflow happens in the bot.</p>
+      <div className="channel-guide">
+        <span><b>Website</b> Setup, security, and recovery</span>
+        <span><b>Telegram</b> Read, reply, and send email</span>
+      </div>
       {params.result && <div className={params.result === "error" ? "notice error" : "notice"}>
         {pairingCode ? <>Pairing code: <b>{pairingCode}</b>. In a private chat with your bot, send <code>/start {pairingCode}</code>. It expires in 15 minutes.</> : params.result.replaceAll("-", " ")}
       </div>}
     </section>
 
     <section className="panel setup">
-      <div className="section-heading"><div><small>GUIDED ONBOARDING</small><h2>Setup checklist</h2></div><span>{[connected, paired, webhook].filter(Boolean).length}/3 ready</span></div>
+      <div className="section-heading"><div><small>GET STARTED</small><h2>Three steps, then use Telegram</h2></div><span>{[connected, paired, webhook].filter(Boolean).length}/3 ready</span></div>
       <div className="checklist">
-        <div className={connected ? "complete" : ""}><b>1</b><span><strong>Connect Outlook</strong><small>{connected ? "Mailbox authorized" : "Authorization required"}</small></span><a className="button small-button" href="/api/oauth/microsoft/start">{connected ? "Reconnect" : "Connect"}</a></div>
-        <div className={paired ? "complete" : ""}><b>2</b><span><strong>Pair Telegram</strong><small>{paired ? "Private chat authorized" : "Generate a one-time code"}</small></span>{paired ? <span className="tag">Paired</span> : <ActionForm action="pair" label="Generate code" />}</div>
-        <div className={webhook ? "complete" : ""}><b>3</b><span><strong>Activate inbox sync</strong><small>{webhook ? "Webhook subscription active" : "Runs automatically after connection"}</small></span><span className="tag">{webhook ? "Active" : "Pending"}</span></div>
+        <div className={connected ? "complete" : ""}><b>1</b><span><strong>Connect your Outlook mailbox</strong><small>{connected ? "Your mailbox is securely connected" : "Sign in to Microsoft and approve access"}</small></span><a className="button small-button" href="/api/oauth/microsoft/start">{connected ? "Reconnect" : "Connect Outlook"}</a></div>
+        <div className={paired ? "complete" : ""}><b>2</b><span><strong>Pair your private Telegram chat</strong><small>{paired ? "Only your paired chat can control this account" : "Generate a one-time code, then send it to the bot"}</small></span>{paired ? <span className="tag">Paired</span> : <ActionForm action="pair" label="Generate pairing code" />}</div>
+        <div className={webhook ? "complete" : ""}><b>3</b><span><strong>Start using MailPulse in Telegram</strong><small>{webhook ? "Send /menu to the bot whenever you need it" : "Inbox sync activates automatically after Outlook connects"}</small></span><span className="tag">{webhook ? "Ready" : "Pending"}</span></div>
       </div>
     </section>
 
     <section className="grid stats">
-      <article><small>MAILBOXES</small><strong>{data.accounts.length}</strong><p>{connected ? "Connected" : "Needs attention"}<br />Latest sync: {when(data.accounts[0]?.lastSyncedAt)}</p></article>
+      <article><small>OUTLOOK</small><strong>{connected ? "Connected" : "Not connected"}</strong><p>{data.accounts.length} mailbox{data.accounts.length === 1 ? "" : "es"}<br />Latest sync: {when(data.accounts[0]?.lastSyncedAt)}</p></article>
       <article><small>TELEGRAM</small><strong>{paired ? "Paired" : "Not paired"}</strong><p>{data.destination ? `Chat ${data.destination.chatId.toString()}` : "No destination"}</p></article>
       <article><small>MONTHLY QUOTA</small><strong>{data.usage} / {quotaLimit}</strong><p>{data.pendingUsage} send(s) reserved · {data.subscription?.plan ?? "FREE"} · {data.subscription?.status ?? "ACTIVE"}</p></article>
-      <article><small>OPEN ALERTS</small><strong>{data.alerts.filter((alert) => alert.status === "OPEN").length}</strong><p>Failures are deduplicated and rate-limited.</p></article>
+      <article><small>NEEDS ATTENTION</small><strong>{data.alerts.filter((alert) => alert.status === "OPEN").length}</strong><p>Connection or delivery issues that may need action.</p></article>
       <article><small>MESSAGES</small><strong>{data.messages.length}</strong><p>Showing the 10 most recent tenant messages.</p></article>
       <article><small>SENDS</small><strong>{data.outgoing.filter((item) => item.status === "SENT").length}</strong><p>Recent confirmed sends in this view.</p></article>
     </section>

@@ -7,6 +7,41 @@ export function truncate(value: string, max: number): string {
   return `${value.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function dateFormatter(timeZone: string, options: Intl.DateTimeFormatOptions) {
+  try {
+    return new Intl.DateTimeFormat("en-US", { ...options, timeZone });
+  } catch {
+    return new Intl.DateTimeFormat("en-US", { ...options, timeZone: "UTC" });
+  }
+}
+
+function calendarKey(value: Date, timeZone: string): string {
+  return dateFormatter(timeZone, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
+export function friendlyDateTime(
+  value: Date,
+  timeZone: string,
+  now = new Date(),
+): string {
+  const time = dateFormatter(timeZone, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(value);
+  const key = calendarKey(value, timeZone);
+  if (key === calendarKey(now, timeZone)) return `Today at ${time}`;
+  if (key === calendarKey(new Date(now.getTime() - 86_400_000), timeZone)) {
+    return `Yesterday at ${time}`;
+  }
+  const day = dateFormatter(timeZone, { month: "short", day: "numeric" }).format(value);
+  return `${day} at ${time}`;
+}
+
 export function incomingEmailMessage(input: {
   senderName?: string | null;
   senderAddress: string;
@@ -14,19 +49,23 @@ export function incomingEmailMessage(input: {
   preview?: string | null;
   receivedAt: Date;
   attachmentCount: number;
+  timezone: string;
 }): string {
   const sender = input.senderName
     ? `${escapeHtml(input.senderName)} &lt;${escapeHtml(input.senderAddress)}&gt;`
     : escapeHtml(input.senderAddress);
   const lines = [
-    "📨 <b>NEW EMAIL</b>",
+    "📬 <b>New email</b>",
     "",
-    `👤 From: ${sender}`,
-    `📌 Subject: ${escapeHtml(input.subject)}`,
-    `🕒 Received: ${escapeHtml(input.receivedAt.toISOString())}`,
+    `<b>${escapeHtml(input.subject)}</b>`,
+    `From ${sender}`,
+    friendlyDateTime(input.receivedAt, input.timezone),
   ];
-  if (input.attachmentCount) lines.push(`📎 Attachments: ${input.attachmentCount}`);
-  if (input.preview) lines.push("", escapeHtml(truncate(input.preview, 2500)));
+  if (input.attachmentCount) lines.push(`📎 ${input.attachmentCount} attachment${input.attachmentCount === 1 ? "" : "s"}`);
+  lines.push("", "<b>Preview</b>");
+  if (input.preview) lines.push(escapeHtml(truncate(input.preview, 850)));
+  else lines.push("<i>No text preview is available.</i>");
+  lines.push("", "<i>Tap Read full email to see the complete message.</i>");
   return lines.join("\n");
 }
 
@@ -81,16 +120,17 @@ export function scheduledMessage(input: {
   attachmentCount: number;
   deadline: Date;
   undoSeconds?: number;
+  timezone: string;
 }): string {
   const seconds = input.undoSeconds ?? 10;
   return [
-    "⏳ <b>EMAIL SCHEDULED</b>",
+    "⏳ <b>Email ready to send</b>",
     "",
-    `Your email will be sent in ${seconds} seconds.`,
+    `Sending in ${seconds} seconds. Tap Undo send below to cancel.`,
     "",
     `👤 To: ${escapeHtml(input.to.join(", "))}`,
     `📌 Subject: ${escapeHtml(input.subject)}`,
     `📎 Attachments: ${input.attachmentCount}`,
-    `🕒 Sending at: ${escapeHtml(input.deadline.toISOString())}`,
+    `🕒 ${friendlyDateTime(input.deadline, input.timezone)}`,
   ].join("\n");
 }

@@ -51,7 +51,17 @@ export async function processScheduledOutgoing(
       await Promise.allSettled(completed.draft.account.user.destinations
         .filter((destination) => destination.enabled && destination.pairedAt)
         .map((destination) => sendTelegramMessage(destination.chatId,
-          `✅ <b>Email sent.</b>\n\n${completed.draft.subject.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}`)));
+          [
+            "✅ <b>Email sent</b>",
+            "",
+            completed.draft.subject.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+            "",
+            "Delivered through your connected Outlook account.",
+          ].join("\n"),
+          [
+            [{ text: "✉️ Write another", callback_data: "compose:auto" }, { text: "📤 View sent", callback_data: "sent:list" }],
+            [{ text: "🏠 Main menu", callback_data: "home:menu" }],
+          ])));
     }
     return "SENT";
   } catch (error) {
@@ -83,7 +93,11 @@ export async function processScheduledOutgoing(
       await Promise.allSettled(affected.account.user.destinations
         .filter((destination) => destination.enabled && destination.pairedAt)
         .map((destination) => sendTelegramMessage(destination.chatId,
-          "⚠️ <b>Send status is uncertain.</b>\n\nCheck Outlook before trying again; MailPulse will not retry automatically.")));
+          "⚠️ <b>Send status is uncertain.</b>\n\nOpen Outlook and check Sent Items before doing anything. MailPulse will not retry automatically, which prevents accidental duplicates.",
+          [
+            [{ text: "🟢 Check MailPulse status", callback_data: "status:view" }],
+            [{ text: "🏠 Main menu", callback_data: "home:menu" }],
+          ])));
     }
     return "UNKNOWN";
   }

@@ -15,7 +15,9 @@ import {
 } from "@/telegram/client";
 import { normalizeTelegramAttachment, TelegramAttachmentKind } from "@/telegram/attachments";
 import { parseRecipients, validateBody, validateSubject } from "@/telegram/compose";
-import { composePrompt, draftPreview, escapeHtml, homeMessage, scheduledMessage, truncate } from "@/telegram/format";
+import {
+  composePrompt, draftPreview, escapeHtml, friendlyDateTime, homeMessage, scheduledMessage, truncate,
+} from "@/telegram/format";
 import {
   fullEmailFilename, splitTelegramEmail, TELEGRAM_EMAIL_FILE_THRESHOLD,
 } from "@/telegram/full-email";
@@ -121,7 +123,10 @@ async function promptForConversation(destination: Destination, state: { state: s
 async function beginNewEmail(destination: Destination, requestedAccountId?: string) {
   const active = await activeConversation(destination);
   if (active) {
-    await sendTelegramMessage(destination.chatId, "You already have an email in progress. Finish or discard it first.");
+    await sendTelegramMessage(
+      destination.chatId,
+      "✏️ <b>You already have an email in progress.</b>\n\nContinue below, or use /cancel to discard it.",
+    );
     await promptForConversation(destination, active.state);
     return false;
   }
@@ -136,7 +141,14 @@ async function beginNewEmail(destination: Destination, requestedAccountId?: stri
     orderBy: { emailAddress: "asc" },
   });
   if (!accounts.length) {
-    await sendTelegramMessage(destination.chatId, "No connected Outlook account is available. Use /status to check the connection.");
+    await sendTelegramMessage(
+      destination.chatId,
+      "⚠️ <b>Outlook is not connected.</b>\n\nOpen MailPulse to connect or repair your mailbox, then try /new again.",
+      [
+        [{ text: "🌐 Open MailPulse setup", url: config().APPLICATION_BASE_URL }],
+        [{ text: "🟢 Check status", callback_data: "status:view" }],
+      ],
+    );
     return false;
   }
   if (!requestedAccountId && accounts.length > 1) {
@@ -258,14 +270,23 @@ async function showDraft(destination: Destination, draftId: string) {
 async function beginReply(destination: Destination, messageId: string, replyAll: boolean) {
   const active = await activeConversation(destination);
   if (active) {
-    await sendTelegramMessage(destination.chatId, "You already have an email in progress. Finish or discard it first.");
+    await sendTelegramMessage(
+      destination.chatId,
+      "✏️ <b>You already have an email in progress.</b>\n\nContinue below, or use /cancel to discard it.",
+    );
     await promptForConversation(destination, active.state);
     return false;
   }
   const message = await db.emailMessage.findFirst({
     where: { id: messageId, account: { userId: destination.userId } }, include: { account: true },
   });
-  if (!message) throw new Error("Email not found");
+  if (!message) {
+    await sendTelegramMessage(destination.chatId, "That email is no longer available. Open Recent mail to choose another.", [
+      [{ text: "📥 Open recent mail", callback_data: "recent:list" }],
+      [{ text: "🏠 Main menu", callback_data: "home:menu" }],
+    ]);
+    return false;
+  }
   const provider = await providerFor(message.accountId);
   const remote = await provider.createReplyDraft(message.providerMessageId, replyAll);
   try {
@@ -508,19 +529,23 @@ async function handleCommand(destination: Destination, command: string) {
     return;
   }
   if (command === "/recent" || command === "/inbox") {
-    const messages = await db.emailMessage.findMany({
-      where: { account: { userId: destination.userId } }, orderBy: { receivedAt: "desc" }, take: 10,
-    });
+    const [messages, settings] = await Promise.all([
+      db.emailMessage.findMany({
+        where: { account: { userId: destination.userId } }, orderBy: { receivedAt: "desc" }, take: 10,
+      }),
+      db.applicationSettings.findUnique({ where: { userId: destination.userId } }),
+    ]);
+    const timezone = settings?.timezone ?? config().DEFAULT_TIMEZONE;
     if (!messages.length) {
       await sendTelegramMessage(destination.chatId, "📭 <b>Your inbox is clear.</b>", [
         [{ text: "✉️ Write a new email", callback_data: "compose:auto" }],
       ]);
       return;
     }
-    await sendTelegramMessage(destination.chatId, "📥 <b>Recent mail</b>\n\nChoose a message to reply.");
+    await sendTelegramMessage(destination.chatId, "📥 <b>Recent mail</b>\n\nChoose an email to read or reply.");
     for (const message of messages) {
       await sendTelegramMessage(destination.chatId,
-        `<b>${escapeHtml(message.subject)}</b>\n👤 ${escapeHtml(message.senderAddress)}`,
+        `<b>${escapeHtml(message.subject)}</b>\n${escapeHtml(message.senderName || message.senderAddress)} · ${friendlyDateTime(message.receivedAt, timezone)}`,
         [
           [{ text: "📖 Read full email", callback_data: `read:${message.id}` }],
           [{ text: "↩️ Reply", callback_data: `reply:${message.id}` }, { text: "↩️ Reply all", callback_data: `replyall:${message.id}` }],
@@ -550,8 +575,9 @@ async function handleCommand(destination: Destination, command: string) {
     }
     return;
   }
-  await sendTelegramMessage(destination.chatId, "I do not recognize that command.", [
-    [{ text: "🏠 Main menu", callback_data: "home:menu" }],
+  await sendTelegramMessage(destination.chatId, "I did not recognize that command. Choose an action below, or send /help.", [
+    [{ text: "✉️ New email", callback_data: "compose:auto" }],
+    [{ text: "📥 Recent mail", callback_data: "recent:list" }, { text: "🏠 Main menu", callback_data: "home:menu" }],
   ]);
 }
 
@@ -584,6 +610,7 @@ async function handleCallback(destination: Destination, id: string, data: string
         senderName: true,
         senderAddress: true,
         subject: true,
+        receivedAt: true,
       },
     });
     if (!message) {
@@ -597,17 +624,26 @@ async function handleCallback(destination: Destination, id: string, data: string
       const sender = message.senderName
         ? `${escapeHtml(message.senderName)} &lt;${escapeHtml(message.senderAddress)}&gt;`
         : escapeHtml(message.senderAddress);
+      const settings = await db.applicationSettings.findUnique({ where: { userId: destination.userId } });
+      const timezone = settings?.timezone ?? config().DEFAULT_TIMEZONE;
       await sendTelegramMessage(destination.chatId, [
-        "📖 <b>FULL EMAIL</b>",
+        "📖 <b>Complete email</b>",
         "",
-        `👤 From: ${sender}`,
-        `📌 Subject: ${escapeHtml(message.subject)}`,
+        `<b>${escapeHtml(message.subject)}</b>`,
+        `From ${sender}`,
+        friendlyDateTime(message.receivedAt, timezone),
       ].join("\n"));
 
-      const replyButtons = [[
-        { text: "↩️ Reply", callback_data: `reply:${objectId}` },
-        { text: "↩️ Reply all", callback_data: `replyall:${objectId}` },
-      ]];
+      const completionButtons = [
+        [
+          { text: "↩️ Reply", callback_data: `reply:${objectId}` },
+          { text: "↩️ Reply all", callback_data: `replyall:${objectId}` },
+        ],
+        [
+          { text: "📥 Recent mail", callback_data: "recent:list" },
+          { text: "🏠 Main menu", callback_data: "home:menu" },
+        ],
+      ];
       if (body.length > TELEGRAM_EMAIL_FILE_THRESHOLD) {
         const fileText = [
           `From: ${message.senderName ? `${message.senderName} <${message.senderAddress}>` : message.senderAddress}`,
@@ -622,7 +658,7 @@ async function handleCallback(destination: Destination, id: string, data: string
           new TextEncoder().encode(fileText),
           "The complete email is attached as a text file.",
         );
-        await sendTelegramMessage(destination.chatId, "What would you like to do?", replyButtons);
+        await sendTelegramMessage(destination.chatId, "✅ <b>Complete email delivered.</b>\n\nWhat would you like to do?", completionButtons);
         return;
       }
 
@@ -631,14 +667,18 @@ async function handleCallback(destination: Destination, id: string, data: string
         await sendTelegramPlainMessage(
           destination.chatId,
           chunks.length > 1 ? `${index + 1}/${chunks.length}\n\n${chunk}` : chunk,
-          index === chunks.length - 1 ? replyButtons : undefined,
         );
       }
+      await sendTelegramMessage(destination.chatId, "✅ <b>End of email.</b>\n\nWhat would you like to do?", completionButtons);
     } catch (error) {
       logger.error({ err: error, messageId: objectId }, "Full email delivery failed");
       await sendTelegramMessage(
         destination.chatId,
-        "I could not load the full email right now. Please try again in a moment.",
+        "⚠️ <b>I could not load the complete email.</b>\n\nTry again. If it still fails, check that Outlook is connected.",
+        [
+          [{ text: "🔄 Try again", callback_data: `read:${objectId}` }],
+          [{ text: "🟢 Check status", callback_data: "status:view" }, { text: "🏠 Main menu", callback_data: "home:menu" }],
+        ],
       );
     }
     return;
@@ -778,6 +818,8 @@ async function handleCallback(destination: Destination, id: string, data: string
       to: recipients.map((x) => x.address), subject: draft.subject,
       attachmentCount: draft.attachments.length, deadline: result.outgoing.cancellationDeadline!,
       undoSeconds: config().UNDO_SEND_SECONDS,
+      timezone: (await db.applicationSettings.findUnique({ where: { userId: destination.userId } }))?.timezone
+        ?? config().DEFAULT_TIMEZONE,
     }), [[{ text: "↩️ Undo send", callback_data: `undo:${result.outgoing.id}` }]]);
     await answerCallbackQuery(id, "Scheduled. You have 10 seconds to undo.");
     return;

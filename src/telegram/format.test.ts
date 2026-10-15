@@ -1,14 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { composePrompt, draftPreview, homeMessage, scheduledMessage } from "./format";
+import { composePrompt, draftPreview, friendlyDateTime, homeMessage, incomingEmailMessage, scheduledMessage } from "./format";
 
 describe("scheduledMessage", () => {
   it("shows the 10 second default and escapes user content", () => {
     const message = scheduledMessage({
       to: ["a@example.com"], subject: "A < B & C", attachmentCount: 0,
       deadline: new Date("2026-10-13T18:30:10Z"),
+      timezone: "UTC",
     });
-    expect(message).toContain("sent in 10 seconds");
+    expect(message).toContain("Sending in 10 seconds");
     expect(message).toContain("A &lt; B &amp; C");
+  });
+  it("uses friendly local timestamps and clearly labels shortened email text", () => {
+    expect(friendlyDateTime(
+      new Date("2026-10-15T15:49:33Z"),
+      "America/Buenos_Aires",
+      new Date("2026-10-15T18:00:00Z"),
+    )).toBe("Today at 12:49");
+    const message = incomingEmailMessage({
+      senderAddress: "client@example.com",
+      subject: "A useful update",
+      preview: "x".repeat(1_000),
+      receivedAt: new Date("2026-10-15T15:49:33Z"),
+      attachmentCount: 0,
+      timezone: "America/Buenos_Aires",
+    });
+    expect(message).toContain("<b>Preview</b>");
+    expect(message).toContain("Tap Read full email");
+    expect(message).not.toContain("2026-10-15T15:49:33.000Z");
+    expect(message.length).toBeLessThan(1_200);
   });
   it("lists safe attachment filenames in reply previews", () => {
     const message = draftPreview({
