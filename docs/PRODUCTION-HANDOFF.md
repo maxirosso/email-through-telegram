@@ -1,11 +1,11 @@
 # MailPulse Production Handoff
 
-Last updated: 2026-10-14
+Last updated: 2026-10-15
 Production URL: https://mailpulse-topaz.vercel.app
 
 ## Executive status
 
-MailPulse has a deployed, verified single-owner production baseline for Outlook and Telegram. It receives Outlook email, notifies the authorized Telegram chat, creates reply/reply-all drafts, accepts files and iPhone photos, previews replies, and sends after a durable 10-second undo window.
+MailPulse has a deployed, verified single-owner production baseline for Outlook and Telegram. It receives Outlook email, notifies the authorized Telegram chat, composes new messages, creates reply/reply-all drafts, accepts files and iPhone photos, previews and edits drafts, and sends after a durable 10-second undo window.
 
 The tenant-aware Outlook/Telegram foundation is deployed and its production migration is applied. It is suitable for the owner's personal use and an invite-only pilot within free-tier limitations. It is not yet a finished commercial multi-provider SaaS.
 
@@ -33,6 +33,9 @@ Supabase Auth still needs project-level configuration and the first owner invite
 - Access is restricted to the paired owner user/chat.
 - Duplicate Telegram updates are safely ignored.
 - Incoming notifications support Reply and Reply All.
+- `/new` provides a guided recipient, subject, and message flow for brand-new emails.
+- The compact Telegram home screen and native command menu expose new mail, inbox, drafts, sent mail, status, and settings.
+- New-message previews can edit recipients, subject, body, and attachments before sending.
 - Provider drafts and previews are created before sending.
 - Sends are persisted before QStash schedules them.
 - Undo Send is 10 seconds and send work is claimed atomically.
@@ -61,7 +64,7 @@ Supabase Auth still needs project-level configuration and the first owner invite
 
 ### Last verified release
 
-Tenant-foundation release commit `18626ff` is live at the production URL through Vercel. The release passed 21 tests, TypeScript checking, the Next.js 16.4 production build, readiness checks, HTTP 200 live/ready/login/dashboard checks, and HTTP 401 rejection checks for unsigned Telegram, send-job, and dashboard-export requests.
+The current tenant foundation is live at the production URL through Vercel. The new-email release passes 26 tests, TypeScript checking, the Next.js 16.4 production build, readiness checks, HTTP 200 live/ready/login/dashboard checks, and HTTP 401 rejection checks for unsigned Telegram, send-job, and dashboard-export requests.
 
 ## Architecture
 
@@ -112,16 +115,17 @@ Completed and deployed:
 Verified:
 
 - Prisma client generation and schema validation.
-- 21 automated tests pass across 7 files.
+- 26 automated tests pass across 8 files.
 - TypeScript checking passes.
 - Next.js 16.4 production build passes.
 - Existing production readiness check passes: database ready, Outlook connected, Graph webhook active, Telegram paired.
 - An encrypted, locally verified pre-migration logical backup exists at `backups/mailpulse-pre-saas-20261014-165321.mpbk`; plaintext was never written.
+- A second verified encrypted recovery point was created before the new-email migration at `backups/mailpulse-pre-new-email-20261015-1402.mpbk`.
 - Migration `20261014220000_saas_foundation` is recorded exactly once in `_prisma_migrations`.
 - Post-migration Supabase security advisor has only the expected informational `rls_enabled_no_policy` findings for deliberately server-only tables.
 - Post-migration performance advisor has only unused-index informational findings; the indexes are retained because they support production query and foreign-key access paths as data grows.
 - Production bootstrap renewed the Telegram webhook, Graph subscription/sync state, and QStash schedule.
-- Production readiness reports database ready, Outlook connected, Graph webhook active, Telegram paired, 51 messages, 0 scheduled sends, and 3 sent messages.
+- Production readiness reports database ready, Outlook connected, Graph webhook active, Telegram paired, and no stranded scheduled sends.
 - The first maintenance pass applied the new default 90-day retention to historical data before the intended production policy was persisted. The encrypted backup was restored idempotently, restoring the original 51-message count, and the current tenant retention is now 3650 days.
 
 Still intentionally gated:
@@ -211,7 +215,7 @@ Never commit or paste secret values into documentation, screenshots, or client-s
 
 ## Migration record
 
-Migration `20261014220000_saas_foundation` was backed up, reviewed, applied once with Prisma Migrate, verified in `_prisma_migrations`, and followed by table/RLS/privilege checks and both Supabase advisors. Do not manually replay or edit this applied migration; create a new migration for later schema changes.
+Migrations `20261014220000_saas_foundation` and `20261015133153_new_email_compose` were backed up, reviewed, applied with Prisma Migrate, verified in `_prisma_migrations`, and followed by schema/RLS checks and both Supabase advisors. The new-email migration had one recorded failed no-op attempt after Windows stripped quoted identifiers; it was explicitly marked rolled back, corrected with schema-qualified identifiers, and then applied successfully once. Do not manually replay or edit these applied migrations; create a new migration for later schema changes.
 
 ## Release gates
 
@@ -240,7 +244,7 @@ Automated tests must not send real email. A human must deliberately confirm the 
 
 ## Recommended Telegram UX
 
-Keep visible commands limited to `/inbox`, `/drafts`, `/status`, `/settings`, and `/help`. Keep Reply, Reply All, Add attachment, Send, Undo, and Cancel as contextual buttons. Put history, retries, billing, retention, export/delete, support, and audits in the dashboard.
+Keep visible commands focused on `/new`, `/inbox`, `/drafts`, `/sent`, `/status`, `/settings`, `/menu`, and `/help`. Keep Reply, Reply All, edit, attachment, Send, Undo, and Discard actions as contextual buttons. Put retries, billing, retention, export/delete, support, and audits in the dashboard.
 
 ## Honest readiness assessment
 

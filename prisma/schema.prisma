@@ -68,6 +68,7 @@ enum DraftStatus {
 }
 
 enum ReplyType {
+  NEW
   REPLY
   REPLY_ALL
 }
@@ -175,7 +176,7 @@ model EmailAttachment {
 model EmailDraft {
   id                String            @id @default(cuid())
   accountId         String
-  originalMessageId String
+  originalMessageId String?
   providerDraftId   String
   replyType         ReplyType
   recipients        Json
@@ -185,7 +186,7 @@ model EmailDraft {
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
   account           EmailAccount      @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  originalMessage   EmailMessage      @relation(fields: [originalMessageId], references: [id], onDelete: Restrict)
+  originalMessage   EmailMessage?     @relation(fields: [originalMessageId], references: [id], onDelete: Restrict)
   attachments       EmailAttachment[]
   outgoing          OutgoingMessage?
 

@@ -83,3 +83,19 @@ export async function configureTelegramWebhook(url: string) {
     drop_pending_updates: false,
   });
 }
+
+export async function configureTelegramCommands() {
+  await telegram<boolean>("setMyCommands", {
+    commands: [
+      { command: "new", description: "Write a new email" },
+      { command: "inbox", description: "View recent inbox messages" },
+      { command: "drafts", description: "Open saved drafts" },
+      { command: "scheduled", description: "View pending sends" },
+      { command: "sent", description: "View sent emails" },
+      { command: "status", description: "Check connections" },
+      { command: "settings", description: "View MailPulse settings" },
+      { command: "menu", description: "Open the main menu" },
+      { command: "help", description: "Show help" },
+    ],
+  });
+}

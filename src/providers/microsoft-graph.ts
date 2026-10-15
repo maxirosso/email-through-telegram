@@ -106,6 +106,18 @@ export class MicrosoftGraphProvider implements EmailProvider {
     return new Uint8Array(await response.arrayBuffer());
   }
 
+  async createDraft(update: DraftUpdate): Promise<{ id: string }> {
+    const response = await this.request("/me/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        subject: update.subject,
+        body: { contentType: "Text", content: update.body },
+        toRecipients: update.recipients.map(({ name, address }) => ({ emailAddress: { name, address } })),
+      }),
+    });
+    return (await response.json()) as { id: string };
+  }
+
   async createReplyDraft(messageId: string, replyAll: boolean): Promise<{ id: string }> {
     const action = replyAll ? "createReplyAll" : "createReply";
     const response = await this.request(`/me/messages/${encodeURIComponent(messageId)}/${action}`, {

@@ -36,6 +36,7 @@ export function draftPreview(input: {
   body: string;
   attachmentCount: number;
   attachmentNames?: string[];
+  kind?: "new" | "reply";
 }): string {
   const attachmentLines = (input.attachmentNames ?? []).slice(0, 8)
     .map((name) => `  • ${escapeHtml(truncate(name, 60))}`);
@@ -43,7 +44,7 @@ export function draftPreview(input: {
     attachmentLines.push(`  • …and ${input.attachmentNames!.length - 8} more`);
   }
   return [
-    "📝 <b>REPLY PREVIEW</b>",
+    input.kind === "new" ? "✉️ <b>NEW EMAIL</b>" : "↩️ <b>REPLY PREVIEW</b>",
     "",
     `👤 To: ${escapeHtml(input.to.join(", "))}`,
     `📌 Subject: ${escapeHtml(input.subject)}`,
@@ -52,6 +53,26 @@ export function draftPreview(input: {
     "",
     escapeHtml(truncate(input.body, Math.max(800, 2800 - attachmentLines.join("\n").length))),
   ].join("\n");
+}
+
+export function homeMessage(): string {
+  return [
+    "✨ <b>MailPulse</b>",
+    "",
+    "Email from Telegram—simple, safe, and ready.",
+    "",
+    "What would you like to do?",
+  ].join("\n");
+}
+
+export function composePrompt(step: "recipient" | "subject" | "body"): string {
+  if (step === "recipient") {
+    return "✉️ <b>New email · 1 of 3</b>\n\nWho should receive it?\n\nSend one address, or several separated by commas.\n\n<i>Example: alex@example.com, team@example.com</i>\n\nUse /cancel to discard.";
+  }
+  if (step === "subject") {
+    return "✉️ <b>New email · 2 of 3</b>\n\nWhat is the subject?\n\nUse /cancel to discard.";
+  }
+  return "✉️ <b>New email · 3 of 3</b>\n\nWrite your message.\n\nYou will review everything before it is sent. Use /cancel to discard.";
 }
 
 export function scheduledMessage(input: {

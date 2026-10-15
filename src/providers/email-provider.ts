@@ -47,6 +47,7 @@ export interface EmailProvider {
   getMessage(messageId: string): Promise<ProviderMessage>;
   listMessageAttachments(messageId: string): Promise<ProviderAttachment[]>;
   downloadMessageAttachment(messageId: string, attachmentId: string): Promise<Uint8Array>;
+  createDraft(update: DraftUpdate): Promise<{ id: string }>;
   createReplyDraft(messageId: string, replyAll: boolean): Promise<{ id: string }>;
   getDraft(draftId: string): Promise<ProviderDraft>;
   updateDraft(draftId: string, update: DraftUpdate): Promise<void>;

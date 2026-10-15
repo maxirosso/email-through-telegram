@@ -5,6 +5,7 @@ import { db } from "../src/lib/db";
 
 type TableNameRow = { table_name: string };
 type ColumnRow = { table_name: string; column_name: string; data_type: string; ordinal_position: number };
+type MigrationRow = { migration_name: string };
 
 function encryptionKey() {
   const key = Buffer.from(process.env.ENCRYPTION_KEY ?? "", "base64");
@@ -41,10 +42,15 @@ async function main() {
   }
   const migrationRoot = path.resolve("prisma/migrations");
   const migrationFiles: Record<string, string> = {};
-  for (const name of [
-    "20261013190000_init", "20261013191500_secure_public_tables", "20261013192500_secure_prisma_migrations",
-    "20261014120000_webhooks_and_idempotency", "20261014210000_attachment_idempotency", "20261014220000_saas_foundation",
-  ]) migrationFiles[name] = await readFile(path.join(migrationRoot, name, "migration.sql"), "utf8");
+  const appliedMigrations = await db.$queryRaw<MigrationRow[]>`
+    SELECT migration_name FROM public._prisma_migrations
+    WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
+    ORDER BY started_at
+  `;
+  for (const { migration_name: name } of appliedMigrations) {
+    if (!/^\d{14}_[a-z0-9_]+$/.test(name)) throw new Error("Unsafe migration name");
+    migrationFiles[name] = await readFile(path.join(migrationRoot, name, "migration.sql"), "utf8");
+  }
 
   const payload = Buffer.from(JSON.stringify({
     format: "mailpulse-logical-backup-v1", createdAt: new Date().toISOString(), columns, tables, migrationFiles,

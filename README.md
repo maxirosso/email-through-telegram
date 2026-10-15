@@ -7,7 +7,7 @@ MailPulse is a tenant-isolated Outlook manager operated from Telegram with a sec
 - Microsoft personal-account OAuth with PKCE, signed state, owner-email enforcement, encrypted refresh tokens, and refresh handling.
 - Microsoft Graph Inbox delta synchronization plus change-notification subscriptions and automatic renewal.
 - Durable email/attachment metadata in Supabase; attachment bytes are streamed only when needed.
-- Authorized Telegram notifications, commands, Reply/Reply All drafts, previews, incoming/outgoing attachments, confirmation, and cancellation.
+- Authorized Telegram notifications plus a polished `/new` compose flow, Reply/Reply All drafts, editable previews, incoming/outgoing attachments, confirmation, cancellation, and Undo Send.
 - A database-enforced, atomic **10-second Undo Send** window.
 - Signed QStash jobs, duplicate-update protection, conservative unknown-send handling, and stale-worker recovery without blind retries.
 - Password-protected operational dashboard, liveness/readiness endpoints, RLS on all application tables, and pooled TLS database connections.
@@ -55,13 +55,14 @@ The dashboard uses Supabase magic-link authentication. HTTP Basic auth (`DASHBOA
 npm run bootstrap:production
 ```
 
-That command refuses localhost. It registers the Telegram webhook, initializes Outlook delta sync, creates the Graph subscription, and creates/updates the QStash five-minute maintenance schedule.
+That command refuses localhost. It registers the Telegram webhook and command menu, initializes Outlook delta sync, creates the Graph subscription, and creates/updates the QStash five-minute maintenance schedule.
 
 7. Verify:
    - `GET /api/health/live` returns 200.
    - `GET /api/health/ready` returns 200.
    - The authenticated dashboard shows Outlook, Telegram, and Webhook as active.
-   - Send a harmless email to the connected mailbox, reply from Telegram, preview it, tap Send, and test Undo within 10 seconds.
+   - Use `/new` to create a harmless new email, review it, tap Send, and test Undo within 10 seconds.
+   - Send a harmless email to the connected mailbox and verify Reply and Reply All from Telegram.
 
 Do not run a live email send as part of automated tests. The final end-to-end send requires the owner’s deliberate Telegram confirmation.
 

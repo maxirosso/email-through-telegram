@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftPreview, scheduledMessage } from "./format";
+import { composePrompt, draftPreview, homeMessage, scheduledMessage } from "./format";
 
 describe("scheduledMessage", () => {
   it("shows the 10 second default and escapes user content", () => {
@@ -17,5 +17,16 @@ describe("scheduledMessage", () => {
     });
     expect(message).toContain("IMG_001.jpg");
     expect(message).toContain("quote &lt;final&gt;.pdf");
+  });
+  it("labels new-email previews and exposes a simple three-step compose flow", () => {
+    const message = draftPreview({
+      to: ["client@example.com"], subject: "Hello", body: "A new conversation",
+      attachmentCount: 0, kind: "new",
+    });
+    expect(message).toContain("NEW EMAIL");
+    expect(homeMessage()).toContain("What would you like to do?");
+    expect(composePrompt("recipient")).toContain("1 of 3");
+    expect(composePrompt("subject")).toContain("2 of 3");
+    expect(composePrompt("body")).toContain("3 of 3");
   });
 });

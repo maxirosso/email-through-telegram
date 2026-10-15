@@ -14,7 +14,8 @@ import {
   answerCallbackQuery, getTelegramFile, sendTelegramDocument, sendTelegramMessage,
 } from "@/telegram/client";
 import { normalizeTelegramAttachment, TelegramAttachmentKind } from "@/telegram/attachments";
-import { draftPreview, escapeHtml, scheduledMessage, truncate } from "@/telegram/format";
+import { parseRecipients, validateBody, validateSubject } from "@/telegram/compose";
+import { composePrompt, draftPreview, escapeHtml, homeMessage, scheduledMessage, truncate } from "@/telegram/format";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,6 +59,172 @@ async function providerFor(accountId: string) {
   return new MicrosoftGraphProvider(await accessTokenForAccount(accountId));
 }
 
+async function showHome(destination: Destination) {
+  await sendTelegramMessage(destination.chatId, homeMessage(), [
+    [{ text: "✉️ New email", callback_data: "compose:auto" }],
+    [
+      { text: "📥 Recent", callback_data: "recent:list" },
+      { text: "📝 Drafts", callback_data: "drafts:list" },
+    ],
+    [
+      { text: "📤 Sent", callback_data: "sent:list" },
+      { text: "🟢 Status", callback_data: "status:view" },
+    ],
+  ]);
+}
+
+async function activeConversation(destination: Destination) {
+  const state = await db.telegramConversationState.findFirst({
+    where: { destinationId: destination.id, activeDraftId: { not: null } },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (!state?.activeDraftId) return null;
+  const draft = await db.emailDraft.findFirst({
+    where: { id: state.activeDraftId, account: { userId: destination.userId } },
+  });
+  if (!draft || !["DRAFT", "READY"].includes(draft.status)) {
+    await db.telegramConversationState.delete({ where: { id: state.id } });
+    return null;
+  }
+  return { state, draft };
+}
+
+async function promptForConversation(destination: Destination, state: { state: string; activeDraftId: string | null }) {
+  if (!state.activeDraftId) return;
+  const draft = await db.emailDraft.findFirst({
+    where: { id: state.activeDraftId, account: { userId: destination.userId } },
+    select: { replyType: true },
+  });
+  if (state.state === "AWAITING_RECIPIENT") {
+    await sendTelegramMessage(destination.chatId, composePrompt("recipient"), undefined, true);
+  } else if (state.state === "AWAITING_SUBJECT") {
+    await sendTelegramMessage(destination.chatId, composePrompt("subject"), undefined, true);
+  } else if (state.state === "AWAITING_BODY") {
+    await sendTelegramMessage(destination.chatId,
+      draft?.replyType === "NEW"
+        ? composePrompt("body")
+        : "✍️ <b>Write your reply</b>\n\nYou will review everything before it is sent. Use /cancel to discard.",
+      undefined,
+      true);
+  } else if (state.state === "AWAITING_ATTACHMENT") {
+    await sendTelegramMessage(destination.chatId,
+      "📎 <b>Add attachments</b>\n\nSend photos or files, then tap Done.",
+      [[{ text: "✅ Done", callback_data: `doneattach:${state.activeDraftId}` }]]);
+  } else {
+    await showDraft(destination, state.activeDraftId);
+  }
+}
+
+async function beginNewEmail(destination: Destination, requestedAccountId?: string) {
+  const active = await activeConversation(destination);
+  if (active) {
+    await sendTelegramMessage(destination.chatId, "You already have an email in progress. Finish or discard it first.");
+    await promptForConversation(destination, active.state);
+    return false;
+  }
+
+  const accounts = await db.emailAccount.findMany({
+    where: {
+      userId: destination.userId,
+      enabled: true,
+      connectionStatus: "CONNECTED",
+      ...(requestedAccountId ? { id: requestedAccountId } : {}),
+    },
+    orderBy: { emailAddress: "asc" },
+  });
+  if (!accounts.length) {
+    await sendTelegramMessage(destination.chatId, "No connected Outlook account is available. Use /status to check the connection.");
+    return false;
+  }
+  if (!requestedAccountId && accounts.length > 1) {
+    await sendTelegramMessage(destination.chatId, "✉️ <b>New email</b>\n\nWhich account should send it?", accounts.map((account) => [{
+      text: account.emailAddress,
+      callback_data: `compose:${account.id}`,
+    }]));
+    return false;
+  }
+
+  const account = accounts[0];
+  const provider = await providerFor(account.id);
+  const remote = await provider.createDraft({ recipients: [], subject: "", body: "" });
+  try {
+    const draft = await db.emailDraft.create({
+      data: {
+        accountId: account.id,
+        providerDraftId: remote.id,
+        replyType: "NEW",
+        recipients: [],
+        subject: "",
+        body: "",
+      },
+    });
+    const state = await db.telegramConversationState.create({
+      data: {
+        destinationId: destination.id,
+        activeDraftId: draft.id,
+        state: "AWAITING_RECIPIENT",
+        expectedInput: "EMAIL_ADDRESSES",
+      },
+    });
+    await writeAudit({
+      userId: destination.userId,
+      action: "EMAIL_DRAFT_CREATED",
+      entityType: "EmailDraft",
+      entityId: draft.id,
+      metadata: { kind: "NEW", accountId: account.id },
+    });
+    await promptForConversation(destination, state);
+    return true;
+  } catch (error) {
+    await provider.deleteDraft(remote.id).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function cancelActiveDraft(destination: Destination) {
+  const active = await activeConversation(destination);
+  if (!active) {
+    await sendTelegramMessage(destination.chatId, "There is no active draft to discard.");
+    return false;
+  }
+  await (await providerFor(active.draft.accountId)).deleteDraft(active.draft.providerDraftId).catch(() => undefined);
+  await db.$transaction([
+    db.emailDraft.update({ where: { id: active.draft.id }, data: { status: "CANCELLED" } }),
+    db.telegramConversationState.deleteMany({
+      where: { destinationId: destination.id, activeDraftId: active.draft.id },
+    }),
+  ]);
+  await writeAudit({
+    userId: destination.userId,
+    action: "EMAIL_DRAFT_CANCELLED",
+    entityType: "EmailDraft",
+    entityId: active.draft.id,
+  });
+  await sendTelegramMessage(destination.chatId, "🗑 <b>Draft discarded.</b>", [
+    [{ text: "✉️ Write another", callback_data: "compose:auto" }],
+    [{ text: "🏠 Main menu", callback_data: "home:menu" }],
+  ]);
+  return true;
+}
+
+async function setConversationState(
+  destination: Destination,
+  draftId: string,
+  state: string,
+  expectedInput: string | null,
+) {
+  await db.$transaction([
+    db.telegramConversationState.deleteMany({
+      where: { destinationId: destination.id, activeDraftId: { not: draftId } },
+    }),
+    db.telegramConversationState.upsert({
+      where: { destinationId_activeDraftId: { destinationId: destination.id, activeDraftId: draftId } },
+      create: { destinationId: destination.id, activeDraftId: draftId, state, expectedInput },
+      update: { state, expectedInput },
+    }),
+  ]);
+}
+
 async function showDraft(destination: Destination, draftId: string) {
   const draft = await db.emailDraft.findFirstOrThrow({
     where: { id: draftId, account: { userId: destination.userId } }, include: { attachments: true },
@@ -71,61 +238,144 @@ async function showDraft(destination: Destination, draftId: string) {
     to: recipients.map((item) => item.address), subject: draft.subject,
     body: draft.body, attachmentCount: draft.attachments.length,
     attachmentNames: draft.attachments.map((attachment) => attachment.filename),
+    kind: draft.replyType === "NEW" ? "new" : "reply",
   }), [
-    [
-      { text: "📎 Add photos/files", callback_data: `attach:${draft.id}` },
-      { text: "✅ Send", callback_data: `send:${draft.id}` },
-    ],
+    [{ text: "🚀 Send email", callback_data: `send:${draft.id}` }],
+    ...(draft.replyType === "NEW" ? [[
+      { text: "🎯 To", callback_data: `editto:${draft.id}` },
+      { text: "🏷 Subject", callback_data: `editsubject:${draft.id}` },
+      { text: "✏️ Message", callback_data: `editbody:${draft.id}` },
+    ]] : [[{ text: "✏️ Edit reply", callback_data: `editbody:${draft.id}` }]]),
+    [{ text: "📎 Add photos/files", callback_data: `attach:${draft.id}` }],
     ...attachmentButtons,
-    [{ text: "🗑 Cancel draft", callback_data: `cancel:${draft.id}` }],
+    [{ text: "🗑 Discard", callback_data: `cancel:${draft.id}` }],
   ]);
 }
 
 async function beginReply(destination: Destination, messageId: string, replyAll: boolean) {
+  const active = await activeConversation(destination);
+  if (active) {
+    await sendTelegramMessage(destination.chatId, "You already have an email in progress. Finish or discard it first.");
+    await promptForConversation(destination, active.state);
+    return false;
+  }
   const message = await db.emailMessage.findFirst({
     where: { id: messageId, account: { userId: destination.userId } }, include: { account: true },
   });
   if (!message) throw new Error("Email not found");
   const provider = await providerFor(message.accountId);
   const remote = await provider.createReplyDraft(message.providerMessageId, replyAll);
-  const remoteDraft = await provider.getDraft(remote.id);
-  const draft = await db.emailDraft.create({
-    data: {
-      accountId: message.accountId,
-      originalMessageId: message.id,
-      providerDraftId: remote.id,
-      replyType: replyAll ? "REPLY_ALL" : "REPLY",
-      recipients: remoteDraft.recipients as Prisma.InputJsonValue,
-      subject: remoteDraft.subject,
-      body: "",
-    },
-  });
-  await db.telegramConversationState.create({
-    data: { destinationId: destination.id, activeDraftId: draft.id, state: "AWAITING_BODY", expectedInput: "TEXT" },
-  });
-  await sendTelegramMessage(destination.chatId, "✍️ <b>Type your reply.</b>\n\nI will show a preview before anything is sent.", undefined, true);
+  try {
+    const remoteDraft = await provider.getDraft(remote.id);
+    const draft = await db.emailDraft.create({
+      data: {
+        accountId: message.accountId,
+        originalMessageId: message.id,
+        providerDraftId: remote.id,
+        replyType: replyAll ? "REPLY_ALL" : "REPLY",
+        recipients: remoteDraft.recipients as Prisma.InputJsonValue,
+        subject: remoteDraft.subject,
+        body: "",
+      },
+    });
+    await db.telegramConversationState.create({
+      data: { destinationId: destination.id, activeDraftId: draft.id, state: "AWAITING_BODY", expectedInput: "TEXT" },
+    });
+    await sendTelegramMessage(destination.chatId, "✍️ <b>Write your reply</b>\n\nYou will review everything before it is sent. Use /cancel to discard.", undefined, true);
+    return true;
+  } catch (error) {
+    await provider.deleteDraft(remote.id).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function handleText(destination: Destination, text: string) {
   if (text.startsWith("/")) return handleCommand(destination, text.split(/\s+/)[0].toLowerCase().replace(/@\w+$/, ""));
   const state = await db.telegramConversationState.findFirst({
-    where: { destinationId: destination.id, state: "AWAITING_BODY", activeDraftId: { not: null } },
+    where: {
+      destinationId: destination.id,
+      state: { in: ["AWAITING_RECIPIENT", "AWAITING_SUBJECT", "AWAITING_BODY"] },
+      activeDraftId: { not: null },
+    },
     orderBy: { updatedAt: "desc" },
   });
   if (!state?.activeDraftId) {
-    await sendTelegramMessage(destination.chatId, "Use /recent to choose an email, then tap Reply.");
+    await sendTelegramMessage(destination.chatId, "Choose an action first.", [
+      [{ text: "✉️ New email", callback_data: "compose:auto" }],
+      [{ text: "📥 Recent mail", callback_data: "recent:list" }],
+    ]);
     return;
   }
   const draft = await db.emailDraft.findFirstOrThrow({
     where: { id: state.activeDraftId, account: { userId: destination.userId } },
   });
-  await (await providerFor(draft.accountId)).updateDraft(draft.providerDraftId, {
+  const provider = await providerFor(draft.accountId);
+  const currentRecipients = draft.recipients as Array<{ name?: string; address: string }>;
+  if (state.state === "AWAITING_RECIPIENT") {
+    let recipients: Array<{ address: string }>;
+    try {
+      recipients = parseRecipients(text);
+    } catch {
+      await sendTelegramMessage(destination.chatId,
+        "That email address does not look valid. Try again, separating multiple addresses with commas.",
+        undefined, true);
+      return;
+    }
+    await provider.updateDraft(draft.providerDraftId, {
+      subject: draft.subject,
+      body: draft.body,
+      recipients,
+    });
+    await db.$transaction([
+      db.emailDraft.update({
+        where: { id: draft.id },
+        data: { recipients: recipients as Prisma.InputJsonValue },
+      }),
+      db.telegramConversationState.update({
+        where: { id: state.id },
+        data: { state: "AWAITING_SUBJECT", expectedInput: "TEXT" },
+      }),
+    ]);
+    await sendTelegramMessage(destination.chatId, composePrompt("subject"), undefined, true);
+    return;
+  }
+  if (state.state === "AWAITING_SUBJECT") {
+    let subject: string;
+    try {
+      subject = validateSubject(text);
+    } catch (error) {
+      await sendTelegramMessage(destination.chatId, error instanceof Error ? error.message : "Enter a valid subject.", undefined, true);
+      return;
+    }
+    await provider.updateDraft(draft.providerDraftId, {
+      subject,
+      body: draft.body,
+      recipients: currentRecipients,
+    });
+    await db.$transaction([
+      db.emailDraft.update({ where: { id: draft.id }, data: { subject } }),
+      db.telegramConversationState.update({
+        where: { id: state.id },
+        data: { state: "AWAITING_BODY", expectedInput: "TEXT" },
+      }),
+    ]);
+    await sendTelegramMessage(destination.chatId, composePrompt("body"), undefined, true);
+    return;
+  }
+  let body: string;
+  try {
+    body = validateBody(text);
+  } catch (error) {
+    await sendTelegramMessage(destination.chatId, error instanceof Error ? error.message : "Enter a valid message.", undefined, true);
+    return;
+  }
+  await provider.updateDraft(draft.providerDraftId, {
     subject: draft.subject,
-    body: text,
-    recipients: draft.recipients as Array<{ name?: string; address: string }>,
+    body,
+    recipients: currentRecipients,
   });
   await db.$transaction([
-    db.emailDraft.update({ where: { id: draft.id }, data: { body: text, status: "READY" } }),
+    db.emailDraft.update({ where: { id: draft.id }, data: { body, status: "READY" } }),
     db.telegramConversationState.update({ where: { id: state.id }, data: { state: "READY", expectedInput: null } }),
   ]);
   await showDraft(destination, draft.id);
@@ -142,7 +392,7 @@ async function handleAttachment(
     orderBy: { updatedAt: "desc" },
   });
   if (!state?.activeDraftId) {
-    await sendTelegramMessage(destination.chatId, "Tap Add photos/files on a reply preview first.");
+    await sendTelegramMessage(destination.chatId, "Open an email draft and tap Add photos/files first.");
     return;
   }
   if ((input.file_size ?? 0) > MAX_ATTACHMENT_BYTES) {
@@ -158,7 +408,7 @@ async function handleAttachment(
     return;
   }
   if (draft.attachments.length >= MAX_DRAFT_ATTACHMENTS) {
-    await sendTelegramMessage(destination.chatId, `A reply can contain at most ${MAX_DRAFT_ATTACHMENTS} attachments.`);
+    await sendTelegramMessage(destination.chatId, `An email can contain at most ${MAX_DRAFT_ATTACHMENTS} attachments.`);
     return;
   }
   const existing = await db.emailAttachment.findFirst({
@@ -176,7 +426,7 @@ async function handleAttachment(
   }
   const existingBytes = draft.attachments.reduce((total, attachment) => total + attachment.sizeBytes, 0n);
   if (existingBytes + BigInt(download.bytes.byteLength) > BigInt(MAX_DRAFT_ATTACHMENT_BYTES)) {
-    await sendTelegramMessage(destination.chatId, "The reply would exceed the safe 25 MB total attachment limit.");
+    await sendTelegramMessage(destination.chatId, "The email would exceed the safe 25 MB total attachment limit.");
     return;
   }
   const { filename, mimeType } = normalizeTelegramAttachment(input, kind, download, receivedAt);
@@ -212,10 +462,23 @@ async function handleAttachment(
 }
 
 async function handleCommand(destination: Destination, command: string) {
-  if (command === "/start" || command === "/help") {
+  if (command === "/start" || command === "/menu") {
+    await showHome(destination);
+    return;
+  }
+  if (command === "/help") {
     await sendTelegramMessage(destination.chatId,
-      "<b>MailPulse commands</b>\n/recent — recent mail\n/drafts — open drafts\n/scheduled — pending sends\n/sent — recently sent\n/status — connections\n/pause — stop notifications\n/resume — resume notifications\n/test — test this chat\n/settings — current settings",
+      "✨ <b>MailPulse help</b>\n\n/new — write a new email\n/inbox — recent inbox\n/drafts — saved drafts\n/scheduled — pending sends\n/sent — sent emails\n/status — connections\n/settings — preferences\n/cancel — discard the active draft\n/menu — main menu",
+      [[{ text: "🏠 Open main menu", callback_data: "home:menu" }]],
     );
+    return;
+  }
+  if (command === "/new" || command === "/compose") {
+    await beginNewEmail(destination);
+    return;
+  }
+  if (command === "/cancel") {
+    await cancelActiveDraft(destination);
     return;
   }
   if (command === "/test") { await sendTelegramMessage(destination.chatId, "✅ MailPulse is connected to this private chat."); return; }
@@ -227,9 +490,11 @@ async function handleCommand(destination: Destination, command: string) {
   }
   if (command === "/status" || command === "/accounts") {
     const accounts = await db.emailAccount.findMany({ where: { userId: destination.userId } });
-    await sendTelegramMessage(destination.chatId, accounts.length ? accounts.map((a) =>
-      `📧 ${escapeHtml(a.emailAddress)} — ${a.connectionStatus}${a.notificationsOn ? " — notifications on" : " — paused"}`,
-    ).join("\n") : "No email account is connected.");
+    await sendTelegramMessage(destination.chatId, accounts.length
+      ? ["🟢 <b>MailPulse status</b>", "", ...accounts.map((account) =>
+        `📧 ${escapeHtml(account.emailAddress)}\n   ${account.connectionStatus === "CONNECTED" ? "✅ Connected" : `⚠️ ${account.connectionStatus}`} · ${account.notificationsOn ? "Notifications on" : "Paused"}`,
+      )].join("\n")
+      : "No email account is connected.", [[{ text: "🏠 Main menu", callback_data: "home:menu" }]]);
     return;
   }
   if (command === "/settings") {
@@ -239,39 +504,92 @@ async function handleCommand(destination: Destination, command: string) {
     );
     return;
   }
-  if (command === "/recent") {
+  if (command === "/recent" || command === "/inbox") {
     const messages = await db.emailMessage.findMany({
       where: { account: { userId: destination.userId } }, orderBy: { receivedAt: "desc" }, take: 10,
     });
-    if (!messages.length) { await sendTelegramMessage(destination.chatId, "No synchronized email yet."); return; }
+    if (!messages.length) {
+      await sendTelegramMessage(destination.chatId, "📭 <b>Your inbox is clear.</b>", [
+        [{ text: "✉️ Write a new email", callback_data: "compose:auto" }],
+      ]);
+      return;
+    }
+    await sendTelegramMessage(destination.chatId, "📥 <b>Recent mail</b>\n\nChoose a message to reply.");
     for (const message of messages) {
       await sendTelegramMessage(destination.chatId,
-        `📨 <b>${escapeHtml(message.subject)}</b>\nFrom: ${escapeHtml(message.senderAddress)}`,
-        [[{ text: "Reply", callback_data: `reply:${message.id}` }, { text: "Reply all", callback_data: `replyall:${message.id}` }]],
+        `<b>${escapeHtml(message.subject)}</b>\n👤 ${escapeHtml(message.senderAddress)}`,
+        [[{ text: "↩️ Reply", callback_data: `reply:${message.id}` }, { text: "↩️ Reply all", callback_data: `replyall:${message.id}` }]],
       );
     }
     return;
   }
   if (["/drafts", "/scheduled", "/sent"].includes(command)) {
-    const statuses = command === "/drafts" ? ["DRAFT", "READY", "CANCELLED"] : command === "/scheduled" ? ["SCHEDULED"] : ["SENT"];
+    const statuses = command === "/drafts" ? ["DRAFT", "READY"] : command === "/scheduled" ? ["SCHEDULED"] : ["SENT"];
     const drafts = await db.emailDraft.findMany({
       where: { account: { userId: destination.userId }, status: { in: statuses as never[] } },
       orderBy: { updatedAt: "desc" }, take: 10,
     });
-    await sendTelegramMessage(destination.chatId, drafts.length
-      ? drafts.map((d) => `• ${escapeHtml(d.subject)} — ${d.status}`).join("\n")
-      : `No ${command.slice(1)} messages.`);
+    if (!drafts.length) {
+      await sendTelegramMessage(destination.chatId, `No ${command.slice(1)} messages.`, [
+        [{ text: "✉️ Write a new email", callback_data: "compose:auto" }],
+      ]);
+      return;
+    }
+    await sendTelegramMessage(destination.chatId,
+      command === "/drafts" ? "📝 <b>Drafts</b>" : command === "/scheduled" ? "⏳ <b>Scheduled</b>" : "📤 <b>Recently sent</b>");
+    for (const draft of drafts) {
+      await sendTelegramMessage(destination.chatId,
+        `${draft.replyType === "NEW" ? "✉️" : "↩️"} <b>${escapeHtml(draft.subject || "(no subject)")}</b>\n${draft.status}`,
+        command === "/drafts" ? [[{ text: "Open draft", callback_data: `view:${draft.id}` }]] : undefined);
+    }
     return;
   }
-  await sendTelegramMessage(destination.chatId, "Unknown command. Use /help.");
+  await sendTelegramMessage(destination.chatId, "I do not recognize that command.", [
+    [{ text: "🏠 Main menu", callback_data: "home:menu" }],
+  ]);
 }
 
 async function handleCallback(destination: Destination, id: string, data: string) {
   const [action, objectId] = data.split(":", 2);
   if (!objectId) { await answerCallbackQuery(id, "Invalid action.", true); return; }
+  const commandActions: Record<string, string> = {
+    recent: "/recent",
+    drafts: "/drafts",
+    sent: "/sent",
+    status: "/status",
+    home: "/menu",
+  };
+  if (commandActions[action]) {
+    await answerCallbackQuery(id, "Opening…");
+    await handleCommand(destination, commandActions[action]);
+    return;
+  }
+  if (action === "compose") {
+    await answerCallbackQuery(id, "Starting a new email…");
+    await beginNewEmail(destination, objectId === "auto" ? undefined : objectId);
+    return;
+  }
   if (action === "reply" || action === "replyall") {
-    await beginReply(destination, objectId, action === "replyall");
-    await answerCallbackQuery(id, "Reply draft created.");
+    const created = await beginReply(destination, objectId, action === "replyall");
+    await answerCallbackQuery(id, created ? "Reply draft created." : "Open draft already in progress.");
+    return;
+  }
+  if (action === "view") {
+    const ownedDraft = await db.emailDraft.findFirst({
+      where: {
+        id: objectId,
+        account: { userId: destination.userId },
+        status: { in: ["DRAFT", "READY"] },
+      },
+      select: { id: true },
+    });
+    if (!ownedDraft) {
+      await answerCallbackQuery(id, "Draft not found.", true);
+      return;
+    }
+    await answerCallbackQuery(id, "Opening draft…");
+    await setConversationState(destination, ownedDraft.id, "READY", null);
+    await showDraft(destination, ownedDraft.id);
     return;
   }
   if (action === "files") {
@@ -314,15 +632,40 @@ async function handleCallback(destination: Destination, id: string, data: string
   });
   if (action !== "undo" && !draft) { await answerCallbackQuery(id, "Draft not found.", true); return; }
 
+  if (["editto", "editsubject", "editbody"].includes(action) && draft) {
+    if (!["DRAFT", "READY"].includes(draft.status)) {
+      await answerCallbackQuery(id, "This draft is no longer editable.", true);
+      return;
+    }
+    if ((action === "editto" || action === "editsubject") && draft.replyType !== "NEW") {
+      await answerCallbackQuery(id, "Reply recipients and subjects stay linked to the original email.", true);
+      return;
+    }
+    const nextState = action === "editto"
+      ? "AWAITING_RECIPIENT"
+      : action === "editsubject"
+        ? "AWAITING_SUBJECT"
+        : "AWAITING_BODY";
+    await setConversationState(destination, draft.id, nextState, action === "editto" ? "EMAIL_ADDRESSES" : "TEXT");
+    await answerCallbackQuery(id, "Ready to edit.");
+    if (action === "editto") {
+      await sendTelegramMessage(destination.chatId, composePrompt("recipient"), undefined, true);
+    } else if (action === "editsubject") {
+      await sendTelegramMessage(destination.chatId, composePrompt("subject"), undefined, true);
+    } else {
+      await sendTelegramMessage(destination.chatId,
+        draft.replyType === "NEW" ? composePrompt("body") : "✍️ <b>Edit your reply</b>\n\nSend the complete replacement text. Use /cancel to discard.",
+        undefined, true);
+    }
+    return;
+  }
+
   if (action === "attach" && draft) {
     if (!["DRAFT", "READY"].includes(draft.status)) {
       await answerCallbackQuery(id, "This draft is no longer editable.", true);
       return;
     }
-    await db.telegramConversationState.updateMany({
-      where: { destinationId: destination.id, activeDraftId: draft.id },
-      data: { state: "AWAITING_ATTACHMENT", expectedInput: "ATTACHMENT" },
-    });
+    await setConversationState(destination, draft.id, "AWAITING_ATTACHMENT", "ATTACHMENT");
     await sendTelegramMessage(
       destination.chatId,
       "📎 <b>Attachment mode</b>\n\nSend one or several photos/files (20 MB maximum each), then tap Done.",
@@ -332,10 +675,7 @@ async function handleCallback(destination: Destination, id: string, data: string
     return;
   }
   if (action === "doneattach" && draft) {
-    await db.telegramConversationState.updateMany({
-      where: { destinationId: destination.id, activeDraftId: draft.id },
-      data: { state: "READY", expectedInput: null },
-    });
+    await setConversationState(destination, draft.id, "READY", null);
     await answerCallbackQuery(id, "Attachments saved.");
     await showDraft(destination, draft.id);
     return;
@@ -345,13 +685,21 @@ async function handleCallback(destination: Destination, id: string, data: string
       await answerCallbackQuery(id, draft.status === "SENT" ? "This email was already sent." : "This email is already scheduled.");
       return;
     }
+    const recipients = draft.recipients as Array<{ address: string }>;
+    if (!recipients.length || recipients.some((recipient) => !recipient.address)) {
+      await answerCallbackQuery(id, "Add at least one recipient before sending.", true);
+      return;
+    }
+    if (!draft.subject.trim() || !draft.body.trim()) {
+      await answerCallbackQuery(id, "Complete the subject and message before sending.", true);
+      return;
+    }
     await assertSendQuota(destination.userId);
     const result = await scheduleServerlessSend(draft.id);
     await writeAudit({ userId: destination.userId, action: "EMAIL_SCHEDULED", entityType: "OutgoingMessage", entityId: result.outgoing.id });
     await db.telegramConversationState.deleteMany({
       where: { destinationId: destination.id, activeDraftId: draft.id },
     });
-    const recipients = draft.recipients as Array<{ address: string }>;
     await sendTelegramMessage(destination.chatId, scheduledMessage({
       to: recipients.map((x) => x.address), subject: draft.subject,
       attachmentCount: draft.attachments.length, deadline: result.outgoing.cancellationDeadline!,
@@ -366,7 +714,17 @@ async function handleCallback(destination: Destination, id: string, data: string
       db.emailDraft.update({ where: { id: draft.id }, data: { status: "CANCELLED" } }),
       db.telegramConversationState.deleteMany({ where: { destinationId: destination.id, activeDraftId: draft.id } }),
     ]);
+    await writeAudit({
+      userId: destination.userId,
+      action: "EMAIL_DRAFT_CANCELLED",
+      entityType: "EmailDraft",
+      entityId: draft.id,
+    });
     await answerCallbackQuery(id, "Draft cancelled.");
+    await sendTelegramMessage(destination.chatId, "🗑 <b>Draft discarded.</b>", [
+      [{ text: "✉️ Write another", callback_data: "compose:auto" }],
+      [{ text: "🏠 Main menu", callback_data: "home:menu" }],
+    ]);
     return;
   }
   if (action === "undo") {

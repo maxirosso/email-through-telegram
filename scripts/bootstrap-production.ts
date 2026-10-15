@@ -1,6 +1,6 @@
 import { db } from "../src/lib/db";
 import { config } from "../src/config";
-import { configureTelegramWebhook } from "../src/telegram/client";
+import { configureTelegramCommands, configureTelegramWebhook } from "../src/telegram/client";
 import { MailSyncService } from "../src/services/mail-sync";
 import { ensureMicrosoftSubscription } from "../src/services/microsoft-subscriptions";
 import { qstashClient } from "../src/services/qstash";
@@ -12,6 +12,7 @@ async function main() {
     throw new Error("APPLICATION_BASE_URL must be the deployed HTTPS Vercel URL before bootstrap");
   }
   await configureTelegramWebhook(`${env.APPLICATION_BASE_URL}/api/telegram/webhook`);
+  await configureTelegramCommands();
   const sync = new MailSyncService(db);
   const accounts = await db.emailAccount.findMany({ where: { enabled: true }, select: { id: true } });
   if (!accounts.length) throw new Error("No connected Outlook account was found");

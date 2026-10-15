@@ -51,6 +51,28 @@ describe("MicrosoftGraphProvider", () => {
     });
   });
 
+  it("creates a new Outlook draft with recipients, subject, and a text body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "draft-1" }), {
+      status: 201, headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new MicrosoftGraphProvider("token").createDraft({
+      recipients: [{ address: "client@example.com" }],
+      subject: "A simple subject",
+      body: "Hello from Telegram",
+    });
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://graph.microsoft.com/v1.0/me/messages");
+    const request = fetchMock.mock.calls[0][1];
+    expect(request.method).toBe("POST");
+    expect(JSON.parse(request.body as string)).toEqual({
+      subject: "A simple subject",
+      body: { contentType: "Text", content: "Hello from Telegram" },
+      toRecipients: [{ emailAddress: { address: "client@example.com" } }],
+    });
+  });
+
   it("treats an already-removed attachment as successfully removed", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("missing", { status: 404 })));
     await expect(new MicrosoftGraphProvider("token").removeDraftAttachment("draft", "attachment"))
